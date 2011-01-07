@@ -2413,18 +2413,33 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 	    (IXGBE_FLAG_MSIX_ENABLED | IXGBE_FLAG_MSI_ENABLED)) {
 		int num_vectors = adapter->num_msix_vectors - NON_Q_VECTORS;
 		for (i = 0; i < num_vectors; i++) {
+			u32 eitr;
 			q_vector = adapter->q_vector[i];
+			eitr = q_vector->eitr;
 			if (q_vector->txr_count && !q_vector->rxr_count)
 				/* tx only */
-				q_vector->eitr = adapter->tx_eitr_param;
+				eitr = adapter->tx_eitr_param;
 			else if (q_vector->rxr_count)
 				/* rx only or mixed */
-				q_vector->eitr = adapter->rx_eitr_param;
+				eitr = adapter->rx_eitr_param;
+				
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+			q_vector->ll_irq_set_low = false;
+			q_vector->ll_eitr_save = eitr;
+#endif // LOW_LATENCY_UDP_TCP_IRQ_ADJ
+
+			q_vector->eitr = eitr;
 			ixgbe_write_eitr(q_vector);
 		}
 	/* Legacy Interrupt Mode */
 	} else {
 		q_vector = adapter->q_vector[0];
+
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+			q_vector->ll_irq_set_low = false;
+			q_vector->ll_eitr_save = adapter->rx_eitr_param;
+#endif // LOW_LATENCY_UDP_TCP_IRQ_ADJ
+
 		q_vector->eitr = adapter->rx_eitr_param;
 		ixgbe_write_eitr(q_vector);
 	}

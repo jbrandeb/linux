@@ -57,6 +57,12 @@
 
 #include "ixgbe_api.h"
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#define LOW_LATENCY_UDP_TCP_TX  1       // Include TX Buff Removal in Low Latency RX Proc
+#define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   // Include IRQ Rate increase for no Data
+//#define LL_CHECK_MATCH  1				// Output LL Call, SMP, and Packet hit information 
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
+
 #define PFX "ixgbe: "
 #define DPRINTK(nlevel, klevel, fmt, args...) \
 	((void)((NETIF_MSG_##nlevel & adapter->msg_enable) && \
@@ -328,6 +334,40 @@ struct ixgbe_q_vector {
 #ifndef HAVE_NETDEV_NAPI_LIST
 	struct net_device poll_dev;
 #endif
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+	unsigned long ll_rx_flags;
+	
+#define IXGBE_LL_FLAG_RX_INT       1    // RX HW or SW Interrupt Processing since Start
+#define IXGBE_LL_FLAG_RX_OWNER     2    // RX Queue Owner
+#define IXGBE_LL_FLAG_RX_INT_OFF   3    // RX Interrupts are off (NAPI Enabled)
+
+#define IXGBE_LL_FLAG_INT_ABORTED  8    // RX interrupt process was aborted
+
+#ifdef LOW_LATENCY_UDP_TCP_TX
+	#define IXGBE_LL_FLAG_TX_INT       6    // TX HW or SW Interrupt Processing since Start
+	#define IXGBE_LL_FLAG_TX_OWNER     5    // RX Queue Owner
+#endif /* LOW_LATENCY_UDP_TCP_TX */
+
+	cycles_t  last_rx_time;
+	
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+
+	bool   ll_irq_set_low;       // The Irq has been set low
+	u32    ll_eitr_save;         // Save eitr Setting
+	
+	
+	
+#endif  /* LOW_LATENCY_UDP_TCP_IRQ */
+		
+#ifdef 	LL_CHECK_MATCH
+	unsigned int ll_exec, ll_miss, ll_hit, ll_timeout;
+	unsigned int smp_match, smp_miss, smp_count;
+#endif  /* LL_CHECK_MATCH */
+
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
+
 } ____cacheline_internodealigned_in_smp;
 
 

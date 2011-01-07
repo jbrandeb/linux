@@ -176,8 +176,8 @@ IXGBE_PARAM(max_vfs, "Number of Virtual Functions: 0 = disable (default), 1 = de
  *
  * Default Value: 8000
  */
-#define DEFAULT_ITR                 8000
-IXGBE_PARAM(InterruptThrottleRate, "Maximum interrupts per second, per vector, (956-488281), default 8000");
+#define DEFAULT_ITR                 11111  // Period 90 us MAP
+IXGBE_PARAM(InterruptThrottleRate, "Maximum interrupts per second, per vector, (956-488281), default 11111");
 #define MAX_ITR       IXGBE_MAX_INT_RATE
 #define MIN_ITR       IXGBE_MIN_INT_RATE
 
