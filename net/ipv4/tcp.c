@@ -1334,6 +1334,37 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 
 	if (sk->sk_state == TCP_LISTEN)
 		return -ENOTCONN;
+
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+
+	if (skb_queue_empty(&sk->sk_receive_queue)) {
+
+		// no data, try low latency interface receive flush
+		if ((sk->sk_state == TCP_ESTABLISHED) &&
+			sk->flush.dev_ref ) {	// last buffer from low latency port?
+			if ( sk->last_recv_dev != NULL ) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if ( dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush ) {					
+					TCP_CHECK_TIMER(sk);
+					release_sock(sk);
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
+					if ( dev->netdev_ops->ndo_low_lat_rx_flush( dev,
+					 &sk->flush ) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined( CONFIG_INET_LL_RX_Q_FLOW_CHANGE )
+						sk->flow.flow_change = true;	// poor smp data flow detected 
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+					}	
+					lock_sock(sk);
+					TCP_CHECK_TIMER(sk);
+				}
+			}
+		}
+	}
+	sk->flush.try_flush = false;
+
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
+		
 	while ((skb = tcp_recv_skb(sk, seq, &offset)) != NULL) {
 		if (offset < skb->len) {
 			int used;
@@ -1368,6 +1399,25 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			if (!skb || (offset+1 != skb->len))
 				break;
 		}
+		
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+		// save device info in socket struct for next receive ops
+		sk->last_recv_dev = skb->recv_dev;
+		sk->flush.dev_ref = skb->dev_ref;	// ! NULL if dev does low latency ops
+		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref; 
+		sk->flush.input_port = tcp_hdr(skb)->dest; // save rx port for dev  
+#if	defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+		{
+			u8 smp = (u8) smp_processor_id();
+			if (smp != sk->flow.rx_cpu) { // rx cpu change?
+				sk->flow.rx_cpu = smp;
+				sk->flow.flow_change = true; 	// data flow change detected 
+			}
+			sk->flow.valid_rx = true;
+		}			
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
+
 		if (tcp_hdr(skb)->fin) {
 			sk_eat_skb(sk, skb, 0);
 			++seq;
@@ -1378,6 +1428,13 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			break;
 		tp->copied_seq = seq;
 	}
+
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+	if ((copied > 0) && (skb_queue_empty(&sk->sk_receive_queue)) &&
+		(sk->sk_state == TCP_ESTABLISHED))
+			sk->flush.try_flush = true;
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
+
 	tp->copied_seq = seq;
 
 	tcp_rcv_space_adjust(sk);
@@ -1412,6 +1469,34 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
+
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+	bool low_lat_flush = false;
+
+	if (skb_queue_empty(&sk->sk_receive_queue)) {
+
+		// no data, try low latency interface receive flush
+		if ((sk->sk_state == TCP_ESTABLISHED) &&
+			sk->flush.dev_ref ) {	// last buffer from low latency port?
+			if ( sk->last_recv_dev != NULL ) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if ( dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush ) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;	
+					if ( dev->netdev_ops->ndo_low_lat_rx_flush( dev,
+						&sk->flush ) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+						sk->flow.flow_change = true;	// poor smp data flow detected 
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+					}	
+					low_lat_flush = true;
+				}
+			}
+		}
+	}
+	sk->flush.try_flush = false;
+
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
 
 	lock_sock(sk);
 
@@ -1495,6 +1580,12 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 					*seq, TCP_SKB_CB(skb)->seq,
 					tp->rcv_nxt, flags);
 		}
+		
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+		// At end of queue
+		if ( !skb && (sk->sk_state == TCP_ESTABLISHED))
+			sk->flush.try_flush = true;
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
 
 		/* Well, if we have backlog, try to process it now yet. */
 
@@ -1557,6 +1648,31 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			WARN_ON(tp->copied_seq != tp->rcv_nxt &&
 				!(flags & (MSG_PEEK | MSG_TRUNC)));
 
+#if 0 // May get lower performance on certain data flows, further testing needed
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+
+			// no data, try low latency interface receive flush
+			if ( !low_lat_flush && (sk->sk_state == TCP_ESTABLISHED) &&
+				sk->flush.dev_ref ) {	// last buffer from low latency port?
+				if ( sk->last_recv_dev != NULL ) {
+					struct net_device *dev = sk->last_recv_dev;
+
+				if ( dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush ) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;		
+					if ( dev->netdev_ops->ndo_low_lat_rx_flush( dev,
+							&sk->flush ) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+						sk->flow.flow_change = true;	// poor smp data flow detected 
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+						}
+						low_lat_flush = true;
+					}
+				}
+			}
+			sk->flush.try_flush = false; // tried
+
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
+#endif
 			/* Ugly... If prequeue is not empty, we have to
 			 * process it before releasing socket, otherwise
 			 * order will be broken at second iteration.
@@ -1699,6 +1815,23 @@ do_prequeue:
 					break;
 				}
 			}
+#if defined(CONFIG_INET_LL_TCP_RX_FLUSH) && defined(CONFIG_INET_LL_RX_FLUSH)
+			// save device info in socket struct for next receive ops
+			sk->last_recv_dev = skb->recv_dev;
+			sk->flush.dev_ref = skb->dev_ref;	// ! NULL if dev does low latency ops
+			sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref; 
+			sk->flush.input_port = tcp_hdr(skb)->dest;	// save rx port for dev  
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+			{
+				u8 smp = (u8) smp_processor_id();
+				if (smp != sk->flow.rx_cpu) {	// rx cpu change?
+					sk->flow.rx_cpu = smp;
+					sk->flow.flow_change = true;	// data flow change detected 
+				}
+				sk->flow.valid_rx = true;
+			}			
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+#endif  // CONFIG_INET_LL_TCP_RX_FLUSH && CONFIG_INET_LL_RX_FLUSH
 		}
 
 		*seq += used;

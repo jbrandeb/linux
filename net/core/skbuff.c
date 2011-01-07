@@ -513,7 +513,7 @@ bool skb_recycle_check(struct sk_buff *skb, int skb_size)
 }
 EXPORT_SYMBOL(skb_recycle_check);
 
-static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
+static inline void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 {
 	new->tstamp		= old->tstamp;
 	new->dev		= old->dev;
@@ -553,6 +553,16 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 	new->vlan_tci		= old->vlan_tci;
 
 	skb_copy_secmark(new, old);
+	
+#ifdef CONFIG_INET_LL_RX_FLUSH  // Don't Clone LL Flush Data
+	new->dev_ref		= NULL;
+	new->recv_dev		= NULL;
+	new->dev_skb_id_ref	= 0;
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	new->flow		= old->flow;
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
 }
 
 /*

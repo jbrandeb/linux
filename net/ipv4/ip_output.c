@@ -392,6 +392,14 @@ packet_routed:
 
 	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
+	
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	sk->flow.tx_cpu = (u8) smp_processor_id();
+	sk->flow.valid_tx = true;
+	
+	skb->flow = sk->flow;		// pass flow info to dev drv
+	sk->flow.flow_change = false;	// just do one flow change
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
 
 	res = ip_local_out(skb);
 	rcu_read_unlock();
@@ -1322,6 +1330,17 @@ int ip_push_pending_frames(struct sock *sk)
 		icmp_out_count(net, ((struct icmphdr *)
 			skb_transport_header(skb))->type);
 
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	else { // IPPROTO_UDPLITE, IPPROTO_UDP
+
+		sk->flow.tx_cpu = (u8) smp_processor_id();
+		sk->flow.valid_tx = true;
+	
+		skb->flow = sk->flow;		// pass flow info to dev drv
+		sk->flow.flow_change = false;	// just do one flow change
+	}	
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+	
 	/* Netfilter gets whole the not fragmented skb. */
 	err = ip_local_out(skb);
 	if (err) {

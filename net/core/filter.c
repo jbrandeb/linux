@@ -99,6 +99,26 @@ int sk_filter(struct sock *sk, struct sk_buff *skb)
 }
 EXPORT_SYMBOL(sk_filter);
 
+// same as sk_filter but security_sock_rcv_skb done before enter
+
+int sk_filter_no_sec(struct sock *sk, struct sk_buff *skb)
+{
+	int err = 0;
+	struct sk_filter *filter;
+
+	rcu_read_lock_bh();
+	filter = rcu_dereference(sk->sk_filter);
+	if (filter) {
+		unsigned int pkt_len = sk_run_filter(skb, filter->insns,
+				filter->len);
+		err = pkt_len ? pskb_trim(skb, pkt_len) : -EPERM;
+	}
+	rcu_read_unlock_bh();
+
+	return err;
+}
+EXPORT_SYMBOL(sk_filter_no_sec);
+
 /**
  *	sk_run_filter - run a filter on a socket
  *	@skb: buffer to run the filter on

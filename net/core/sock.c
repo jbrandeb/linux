@@ -79,6 +79,7 @@
  *		Andi Kleen	:	Fix write_space callback
  *		Chris Evans	:	Security fixes - signedness again
  *		Arnaldo C. Melo :       cleanups, use skb_queue_purge
+ *		Mike Polehn	:	Low probability socket filter present optimization
  *
  * To Fix:
  *
@@ -295,9 +296,14 @@ int sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 		return -ENOMEM;
 	}
 
-	err = sk_filter(sk, skb);
+	err = security_sock_rcv_skb(sk, skb);
 	if (err)
 		return err;
+	if (unlikely( sk->sk_filter )) { // only call if a filter present
+		err = sk_filter_no_sec(sk, skb);
+		if (err)
+			return err;
+	}
 
 	if (!sk_rmem_schedule(sk, skb->truesize)) {
 		atomic_inc(&sk->sk_drops);
@@ -1993,6 +1999,18 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	smp_wmb();
 	atomic_set(&sk->sk_refcnt, 1);
 	atomic_set(&sk->sk_drops, 0);
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	// init net dev low latency flush vars
+	sk->last_recv_dev = NULL;
+	memset( &sk->flush, 0, sizeof( sk->flush ));
+#endif  // CONFIG_INET_LL_RX_FLUSH
+
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	sk->flow.flow_change = true;	// new socket is always a flow change
+	sk->flow.valid_rx = false;	// rx cpu unknown
+	sk->flow.valid_tx = false;	// tx cpu unknown
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
 }
 EXPORT_SYMBOL(sock_init_data);
 

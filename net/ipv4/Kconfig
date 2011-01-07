@@ -420,6 +420,49 @@ config INET_LRO
 
 	  If unsure, say Y.
 
+config INET_LL_RX_FLUSH
+	bool "Low Latency Receive Flush"
+	default n
+	---help---
+	  Support Low Latency Receive Queue Flush. For network card drivers which
+	  has support for the receive socket interface, when empty, to call into 
+	  the device driver to flush packets into the IP stack for any packets on 
+          the related device rx queue that has not been yet been processed by an 
+	  interrupt. 
+	  Note: Interrupts often have a delay to allow multiple packets to accumalate
+	  over a time period to prevent too high of an interrupt processing rate.
+
+	  If unsure, say N.
+
+config INET_LL_TCP_RX_FLUSH
+	bool "Low Latency TCP Receive Flush"
+	default n
+	---help---
+	  Support Low Latency TCP Receive Queue Flush. For network card drivers which
+	  has support in the TCP receive socket interface, when empty, to call into 
+	  the device driver to flush into the IP stack any packets on related device 
+	  rx queue that has not been yet been processed an interrupt. 
+	  Note: Interrupts often have a delay to allow multiple packets to accumalate
+	  over a time period to prevent too high of an interrupt processing rate.
+	  
+	  Requires INET_LL_RX_FLUSH flush to also be enabled
+
+	  If unsure, say N.
+
+config INET_LL_RX_Q_FLOW_CHANGE
+	bool "Low Latency TX Flow Change"
+	default n
+	---help---
+	  Supports Low Latency Net Receive Queue Flow Change. Tags a new socket IP 
+	  data flow for the network or data flow that the receive IP processing or 
+	  other processing indicates that the flow is not optimal. The flow change
+	  information and rx cpu core is passed through the inet tx stack by skb to 
+	  the inet device driver.
+
+	  Requires SMP to also be enabled
+
+	  If unsure, say N.
+
 config INET_DIAG
 	tristate "INET: socket monitoring interface"
 	default y

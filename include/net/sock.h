@@ -323,6 +323,14 @@ struct sock {
   	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);  
 	void                    (*sk_destruct)(struct sock *sk);
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	struct net_device	*last_recv_dev;	// net device of last buffer 
+	struct dev_ll_flush	flush;		// driver flush support 
+#endif  // CONFIG_INET_LL_RX_FLUSH
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	struct sk_dev_flow	flow;
+#endif // CONFIG_SMP && CONFIG_INET_LL_RX_Q_FLOW_CHANGE
 };
 
 /*

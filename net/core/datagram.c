@@ -157,11 +157,15 @@ out_noerr:
  *	quite explicitly by POSIX 1003.1g, don't change them without having
  *	the standard around please.
  */
+ 
 struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned flags,
 				    int *peeked, int *err)
 {
 	struct sk_buff *skb;
 	long timeo;
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	bool low_lat_flush = false;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 	/*
 	 * Caller is allowed not to check sk->sk_err before skb_recv_datagram()
 	 */
@@ -190,12 +194,59 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned flags,
 				atomic_inc(&skb->users);
 			} else
 				__skb_unlink(skb, &sk->sk_receive_queue);
+				
+#ifdef CONFIG_INET_LL_RX_FLUSH
+			// when queue empty, driver can be flushed
+			if (skb_queue_empty(&sk->sk_receive_queue))
+				sk->flush.try_flush = true;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 		}
 		spin_unlock_irqrestore(&sk->sk_receive_queue.lock, cpu_flags);
 
-		if (skb)
+		if (skb) {
+#ifdef CONFIG_INET_LL_RX_FLUSH
+			// save device info in socket struct for next receive ops
+			sk->last_recv_dev = skb->recv_dev;
+			sk->flush.dev_ref = skb->dev_ref;  // ! NULL if dev does low latency ops
+			sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref; 
+			sk->flush.input_port = udp_hdr(skb)->dest;  // save rx port for dev  
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+			{
+				u8 smp = (u8) smp_processor_id();
+				if (smp != sk->flow.rx_cpu) {	// rx cpu change?
+					sk->flow.rx_cpu = smp;
+					sk->flow.flow_change = true;	// data flow change detected 
+				}
+				skb->flow.valid_rx = true;
+			}			
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+#endif  // CONFIG_INET_LL_RX_FLUSH
 			return skb;
+		}
+#ifdef CONFIG_INET_LL_RX_FLUSH
+		// low latency interface receive flush
+		if ( sk->flush.dev_ref && !low_lat_flush ) {	// last buffer from low latency port?
+			if ( sk->last_recv_dev != NULL ) {
+				struct net_device *dev = sk->last_recv_dev;
 
+				if ( dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush ) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
+					if ( dev->netdev_ops->ndo_low_lat_rx_flush( dev,
+						&sk->flush ) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+						sk->flow.flow_change = true;	// poor data flow detected 
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+					}	
+
+					low_lat_flush = true;
+					continue;   // try to get next flushed buffer
+				}
+			}
+		}
+		sk->flush.try_flush = false; // tried
+		
+#endif  // CONFIG_INET_LL_RX_FLUSH
+ 
 		/* User doesn't want to wait */
 		error = -EAGAIN;
 		if (!timeo)

@@ -1046,13 +1046,52 @@ EXPORT_SYMBOL(sock_create_lite);
 /* No kernel lock held - perfect */
 static unsigned int sock_poll(struct file *file, poll_table *wait)
 {
+	unsigned int poll_result;
 	struct socket *sock;
-
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	struct sock *sk;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 	/*
 	 *      We can't return errors to poll, so it's either yes or no.
 	 */
 	sock = file->private_data;
-	return sock->ops->poll(file, sock, wait);
+
+	poll_result = sock->ops->poll(file, sock, wait);
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+	if (!wait)
+		return poll_result;
+
+	// empty rx queue and no err or shutdown pending	
+	if ( !( poll_result & ( POLLRDNORM | POLLERR | POLLRDHUP | POLLHUP ))) {
+
+		sk = sock->sk;
+		if ( sk && sk->flush.try_flush) {
+
+			// last rx skb from flush driver port?
+			if ( sk->flush.dev_ref && ( sk->last_recv_dev != NULL )) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if ( dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush ) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_POLL;
+					if ( dev->netdev_ops->ndo_low_lat_rx_flush( dev,
+							&sk->flush ) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+						sk->flow.flow_change = true;	// poor data flow detected 
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+						// redo poll after driver flush, 
+						// NULL to not register wait twice
+						poll_result = sock->ops->poll(file, sock, NULL);
+					}
+				}
+			}
+			sk->flush.try_flush = false; // tried, do only once
+		}
+	}
+#endif  // CONFIG_INET_LL_RX_FLUSH
+
+	return poll_result;
 }
 
 static int sock_mmap(struct file *file, struct vm_area_struct *vma)

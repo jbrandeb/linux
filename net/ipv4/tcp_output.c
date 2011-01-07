@@ -891,6 +891,14 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
 			      tcp_skb_pcount(skb));
 
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+	sk->flow.tx_cpu = (u8) smp_processor_id();	//update Flow
+	sk->flow.valid_tx = true;
+
+	skb->flow = sk->flow;  // pass flow info to dev drv by skb
+	sk->flow.flow_change = false;  // just do one flow change
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+
 	err = icsk->icsk_af_ops->queue_xmit(skb);
 	if (likely(err <= 0))
 		return err;
