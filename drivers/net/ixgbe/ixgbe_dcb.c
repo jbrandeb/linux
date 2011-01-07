@@ -20,14 +20,12 @@
   the file called "COPYING".
 
   Contact Information:
-  Linux NICS <linux.nics@intel.com>
   e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
 
 
-#include "ixgbe.h"
 #include "ixgbe_type.h"
 #include "ixgbe_dcb.h"
 #include "ixgbe_dcb_82598.h"
@@ -61,7 +59,7 @@ s32 ixgbe_dcb_check_config(struct ixgbe_dcb_config *dcb_config)
 	/* First Tx, then Rx */
 	for (i = 0; i < 2; i++) {
 		/* Check each traffic class for rule violation */
-		for (j = 0; j < MAX_TRAFFIC_CLASS; j++) {
+		for (j = 0; j < dcb_config->num_tcs.pg_tcs; j++) {
 			p = &dcb_config->tc_config[j].path[i];
 
 			bw = p->bwg_percent;
@@ -109,7 +107,7 @@ s32 ixgbe_dcb_check_config(struct ixgbe_dcb_config *dcb_config)
 					goto err_config;
 				}
 			} else if (bw_sum[i][j] != BW_PERCENT &&
-				   bw_sum[i][j] != 0) {
+			           bw_sum[i][j] != 0) {
 				ret_val = DCB_ERR_TC_BW;
 				goto err_config;
 			}
@@ -121,7 +119,12 @@ s32 ixgbe_dcb_check_config(struct ixgbe_dcb_config *dcb_config)
 		}
 	}
 
+	return DCB_SUCCESS;
+
 err_config:
+	hw_dbg(hw, "DCB error code %d while checking %s settings.\n",
+	          ret_val, (j == DCB_TX_CONFIG) ? "Tx" : "Rx");
+
 	return ret_val;
 }
 
@@ -134,7 +137,9 @@ err_config:
  * It should be called only after the rules are checked by
  * ixgbe_dcb_check_config().
  */
-s32 ixgbe_dcb_calculate_tc_credits(struct ixgbe_dcb_config *dcb_config,
+s32 ixgbe_dcb_calculate_tc_credits(struct ixgbe_hw *hw,
+                                   struct ixgbe_dcb_config *dcb_config,
+                                   u32 max_frame_size,
                                    u8 direction)
 {
 	struct tc_bw_alloc *p;
@@ -142,6 +147,7 @@ s32 ixgbe_dcb_calculate_tc_credits(struct ixgbe_dcb_config *dcb_config,
 	/* Initialization values default for Tx settings */
 	u32 credit_refill       = 0;
 	u32 credit_max          = 0;
+	u32 minimal_credit_max  = 0;
 	u16 link_percentage     = 0;
 	u8  bw_percent          = 0;
 	u8  i;
@@ -177,8 +183,15 @@ s32 ixgbe_dcb_calculate_tc_credits(struct ixgbe_dcb_config *dcb_config,
 		 * of a TC is too small, the maximum credit may not be
 		 * enough to send out a jumbo frame in data plane arbitration.
 		 */
-		if (credit_max && (credit_max < MINIMUM_CREDIT_FOR_JUMBO))
-			credit_max = MINIMUM_CREDIT_FOR_JUMBO;
+
+		if (credit_max) {
+			minimal_credit_max = (max_frame_size +
+			                      (DCB_CREDIT_QUANTUM - 1)) /
+			                      DCB_CREDIT_QUANTUM;
+
+			if (credit_max < minimal_credit_max)
+				credit_max = minimal_credit_max;
+		}
 
 		if (direction == DCB_TX_CONFIG) {
 			/*
@@ -187,12 +200,12 @@ s32 ixgbe_dcb_calculate_tc_credits(struct ixgbe_dcb_config *dcb_config,
 			 * credit may not be enough to send out a TSO
 			 * packet in descriptor plane arbitration.
 			 */
-			if (credit_max &&
-			    (credit_max < MINIMUM_CREDIT_FOR_TSO))
+			if (credit_max && (credit_max < MINIMUM_CREDIT_FOR_TSO)
+			    && (hw->mac.type == ixgbe_mac_82598EB))
 				credit_max = MINIMUM_CREDIT_FOR_TSO;
 
 			dcb_config->tc_config[i].desc_credits_max =
-				(u16)credit_max;
+			   (u16)credit_max;
 		}
 
 		p->data_credits_max = (u16)credit_max;
@@ -223,9 +236,9 @@ s32 ixgbe_dcb_get_tc_stats(struct ixgbe_hw *hw, struct ixgbe_hw_stats *stats,
 
 /**
  * ixgbe_dcb_get_pfc_stats - Returns CBFC status of each traffic class
- * hw - pointer to hardware structure
- * stats - pointer to statistics structure
- * tc_count -  Number of elements in bwg_array.
+ * @hw: pointer to hardware structure
+ * @stats: pointer to statistics structure
+ * @tc_count:  Number of elements in bwg_array.
  *
  * This function returns the CBFC status data for each of the Traffic Classes.
  */
@@ -346,4 +359,3 @@ s32 ixgbe_dcb_hw_config(struct ixgbe_hw *hw,
 		ret = ixgbe_dcb_hw_config_82599(hw, dcb_config);
 	return ret;
 }
-

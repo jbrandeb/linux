@@ -28,6 +28,8 @@
 #ifndef _IXGBE_FCOE_H
 #define _IXGBE_FCOE_H
 
+#ifdef IXGBE_FCOE
+
 #include <scsi/fc/fc_fs.h>
 #include <scsi/fc/fc_fcoe.h>
 
@@ -51,6 +53,11 @@
 
 /* fcerr */
 #define IXGBE_FCERR_BADCRC       0x00100000
+#define IXGBE_FCERR_EOFSOF       0x00200000
+#define IXGBE_FCERR_NOFIRST      0x00300000
+#define IXGBE_FCERR_OOOSEQ       0x00400000
+#define IXGBE_FCERR_NODMA        0x00500000
+#define IXGBE_FCERR_PKTLOST      0x00600000
 
 struct ixgbe_fcoe_ddp {
 	int len;
@@ -62,13 +69,12 @@ struct ixgbe_fcoe_ddp {
 };
 
 struct ixgbe_fcoe {
-#ifdef CONFIG_IXGBE_DCB
 	u8 tc;
 	u8 up;
-#endif
 	spinlock_t lock;
 	struct pci_pool *pool;
 	struct ixgbe_fcoe_ddp ddp[IXGBE_FCOE_DDP_MAX];
 };
+#endif /* IXGBE_FCOE */
 
 #endif /* _IXGBE_FCOE_H */

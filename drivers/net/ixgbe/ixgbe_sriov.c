@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel 10 Gigabit PCI Express Linux driver
-  Copyright(c) 1999 - 2009 Intel Corporation.
+  Copyright(c) 1999 - 2010 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -24,6 +24,7 @@
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
+
 
 #include <linux/types.h>
 #include <linux/module.h>
@@ -56,17 +57,14 @@ int ixgbe_set_vf_multicasts(struct ixgbe_adapter *adapter,
 	/* only so many hash values supported */
 	entries = min(entries, IXGBE_MAX_VF_MC_ENTRIES);
 
-	/*
-	 * salt away the number of multi cast addresses assigned
+	/* salt away the number of multi cast addresses assigned
 	 * to this VF for later use to restore when the PF multi cast
 	 * list changes
 	 */
 	vfinfo->num_vf_mc_hashes = entries;
 
-	/*
-	 * VFs are limited to using the MTA hash table for their multicast
-	 * addresses
-	 */
+	/* VFs are limited to using the MTA hash table for their multicast
+	 * addresses */
 	for (i = 0; i < entries; i++) {
 		vfinfo->vf_mc_hashes[i] = hash_list[i];;
 	}
@@ -92,6 +90,7 @@ void ixgbe_restore_vf_multicasts(struct ixgbe_adapter *adapter)
 	u32 mta_reg;
 
 	for (i = 0; i < adapter->num_vfs; i++) {
+		u32 vmolr = IXGBE_READ_REG(hw, IXGBE_VMOLR(i));
 		vfinfo = &adapter->vfinfo[i];
 		for (j = 0; j < vfinfo->num_vf_mc_hashes; j++) {
 			hw->addr_ctrl.mta_in_use++;
@@ -101,21 +100,27 @@ void ixgbe_restore_vf_multicasts(struct ixgbe_adapter *adapter)
 			mta_reg |= (1 << vector_bit);
 			IXGBE_WRITE_REG(hw, IXGBE_MTA(vector_reg), mta_reg);
 		}
+		if (vfinfo->num_vf_mc_hashes)
+			vmolr |= IXGBE_VMOLR_ROMPE;
+		else
+			vmolr &= ~IXGBE_VMOLR_ROMPE;
+		IXGBE_WRITE_REG(hw, IXGBE_VMOLR(i), vmolr);
 	}
 }
 
 int ixgbe_set_vf_vlan(struct ixgbe_adapter *adapter, int add, int vid, u32 vf)
 {
-	return adapter->hw.mac.ops.set_vfta(&adapter->hw, vid, vf, (bool)add);
+	return ixgbe_set_vfta(&adapter->hw, vid, vf, (bool)add);
 }
 
+void ixgbe_set_vf_lpe(struct ixgbe_adapter *adapter, u32 *msgbuf)
+{
+}
 
 void ixgbe_set_vmolr(struct ixgbe_hw *hw, u32 vf, bool aupe)
 {
 	u32 vmolr = IXGBE_READ_REG(hw, IXGBE_VMOLR(vf));
-	vmolr |= (IXGBE_VMOLR_ROMPE |
-		  IXGBE_VMOLR_ROPE |
-		  IXGBE_VMOLR_BAM);
+	vmolr |=  IXGBE_VMOLR_BAM;
 	if (aupe)
 		vmolr |= IXGBE_VMOLR_AUPE;
 	else
@@ -145,13 +150,13 @@ inline void ixgbe_vf_reset_event(struct ixgbe_adapter *adapter, u32 vf)
 				  adapter->vfinfo[vf].pf_vlan, vf);
 		ixgbe_set_vmvir(adapter,
 				(adapter->vfinfo[vf].pf_vlan |
-				 (adapter->vfinfo[vf].pf_qos <<
-				  VLAN_PRIO_SHIFT)), vf);
+				 (adapter->vfinfo[vf].pf_qos << 13)), vf);
 		ixgbe_set_vmolr(hw, vf, false);
 	} else {
 		ixgbe_set_vmvir(adapter, 0, vf);
 		ixgbe_set_vmolr(hw, vf, true);
 	}
+
 
 	/* reset multicast table array for vf */
 	adapter->vfinfo[vf].num_vf_mc_hashes = 0;
@@ -185,10 +190,12 @@ int ixgbe_vf_configuration(struct pci_dev *pdev, unsigned int event_mask)
 
 	if (enable) {
 		random_ether_addr(vf_mac_addr);
-		e_info(probe, "IOV: VF %d is enabled MAC %pM\n",
-		       vfn, vf_mac_addr);
-		/*
-		 * Store away the VF "permananet" MAC address, it will ask
+		DPRINTK(PROBE, INFO, "IOV: VF %d is enabled "
+		       "mac %02X:%02X:%02X:%02X:%02X:%02X\n",
+		       vfn,
+		       vf_mac_addr[0], vf_mac_addr[1], vf_mac_addr[2],
+		       vf_mac_addr[3], vf_mac_addr[4], vf_mac_addr[5]);
+		/* Store away the VF "permananet" MAC address, it will ask
 		 * for it later.
 		 */
 		memcpy(adapter->vfinfo[vfn].vf_mac_addresses, vf_mac_addr, 6);
@@ -231,7 +238,7 @@ static int ixgbe_rcv_msg_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 	retval = ixgbe_read_mbx(hw, msgbuf, mbx_size, vf);
 
 	if (retval)
-		pr_err("Error receiving message from VF\n");
+		printk(KERN_ERR "Error receiving message from VF\n");
 
 	/* this is a message we already processed, do nothing */
 	if (msgbuf[0] & (IXGBE_VT_MSGTYPE_ACK | IXGBE_VT_MSGTYPE_NACK))
@@ -244,19 +251,23 @@ static int ixgbe_rcv_msg_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 
 	if (msgbuf[0] == IXGBE_VF_RESET) {
 		unsigned char *vf_mac = adapter->vfinfo[vf].vf_mac_addresses;
-		u8 *addr = (u8 *)(&msgbuf[1]);
-		e_info(probe, "VF Reset msg received from vf %d\n", vf);
+		u8 *new_mac = (u8 *)(&msgbuf[1]);
 		adapter->vfinfo[vf].clear_to_send = false;
 		ixgbe_vf_reset_msg(adapter, vf);
 		adapter->vfinfo[vf].clear_to_send = true;
 
+		if (is_valid_ether_addr(new_mac) &&
+		    !adapter->vfinfo[vf].pf_set_mac)
+			ixgbe_set_vf_mac(adapter, vf, vf_mac);
+		else
+			ixgbe_set_vf_mac(adapter,
+				 vf, adapter->vfinfo[vf].vf_mac_addresses);
+
 		/* reply to reset with ack and vf mac address */
 		msgbuf[0] = IXGBE_VF_RESET | IXGBE_VT_MSGTYPE_ACK;
-		memcpy(addr, vf_mac, IXGBE_ETH_LENGTH_OF_ADDRESS);
-		/*
-		 * Piggyback the multicast filter type so VF can compute the
-		 * correct vectors
-		 */
+		memcpy(new_mac, vf_mac, IXGBE_ETH_LENGTH_OF_ADDRESS);
+		/* Piggyback the multicast filter type so VF can compute the
+		 * correct vectors */
 		msgbuf[3] = hw->mac.mc_filter_type;
 		ixgbe_write_mbx(hw, msgbuf, IXGBE_VF_PERMADDR_MSG_LEN, vf);
 
@@ -271,34 +282,34 @@ static int ixgbe_rcv_msg_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 
 	switch ((msgbuf[0] & 0xFFFF)) {
 	case IXGBE_VF_SET_MAC_ADDR:
+		DPRINTK(PROBE, INFO, "Set MAC msg received from vf %d\n", vf);
 		{
 			u8 *new_mac = ((u8 *)(&msgbuf[1]));
-			if (is_valid_ether_addr(new_mac) &&
-			    !adapter->vfinfo[vf].pf_set_mac)
+			if (is_valid_ether_addr(new_mac))
 				ixgbe_set_vf_mac(adapter, vf, new_mac);
 			else
-				ixgbe_set_vf_mac(adapter,
-				  vf, adapter->vfinfo[vf].vf_mac_addresses);
+				retval = -1;
 		}
 		break;
 	case IXGBE_VF_SET_MULTICAST:
 		entries = (msgbuf[0] & IXGBE_VT_MSGINFO_MASK)
-		          >> IXGBE_VT_MSGINFO_SHIFT;
+					>> IXGBE_VT_MSGINFO_SHIFT;
 		hash_list = (u16 *)&msgbuf[1];
 		retval = ixgbe_set_vf_multicasts(adapter, entries,
-		                                 hash_list, vf);
+						 hash_list, vf);
 		break;
 	case IXGBE_VF_SET_LPE:
-		WARN_ON((msgbuf[0] & 0xFFFF) == IXGBE_VF_SET_LPE);
+		DPRINTK(PROBE, INFO, "Set LPE msg received from vf %d\n", vf);
+		ixgbe_set_vf_lpe(adapter, msgbuf);
 		break;
 	case IXGBE_VF_SET_VLAN:
 		add = (msgbuf[0] & IXGBE_VT_MSGINFO_MASK)
-		      >> IXGBE_VT_MSGINFO_SHIFT;
+					>> IXGBE_VT_MSGINFO_SHIFT;
 		vid = (msgbuf[1] & IXGBE_VLVF_VLANID_MASK);
 		retval = ixgbe_set_vf_vlan(adapter, add, vid, vf);
 		break;
 	default:
-		e_err(drv, "Unhandled Msg %8.8x\n", msgbuf[0]);
+		DPRINTK(PROBE, ERR, "Unhandled Msg %8.8x\n", msgbuf[0]);
 		retval = IXGBE_ERR_MBX;
 		break;
 	}
@@ -372,6 +383,8 @@ void ixgbe_ping_all_vfs(struct ixgbe_adapter *adapter)
 	}
 }
 
+
+#ifdef HAVE_IPLINK_VF_CONFIG
 int ixgbe_ndo_set_vf_mac(struct net_device *netdev, int vf, u8 *mac)
 {
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
@@ -401,7 +414,7 @@ int ixgbe_ndo_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan, u8 qos)
 		err = ixgbe_set_vf_vlan(adapter, true, vlan, vf);
 		if (err)
 			goto out;
-		ixgbe_set_vmvir(adapter, vlan | (qos << VLAN_PRIO_SHIFT), vf);
+		ixgbe_set_vmvir(adapter, vlan | (qos << 13), vf);
 		ixgbe_set_vmolr(&adapter->hw, vf, false);
 		adapter->vfinfo[vf].pf_vlan = vlan;
 		adapter->vfinfo[vf].pf_qos = qos;
@@ -445,3 +458,5 @@ int ixgbe_ndo_get_vf_config(struct net_device *netdev,
 	ivi->qos = adapter->vfinfo[vf].pf_qos;
 	return 0;
 }
+#endif
+
