@@ -1828,6 +1828,7 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int q_vectors, vector, r_idx;
 	bool rx_clean_complete = true;
 	int  exit_stat = INET_LL_RX_FLUSH_OP;
+	int f;
 //	bool non_target_packet_rec = false;
 
 #ifdef LL_MULTI_PORT_QUICKEXIT
@@ -2091,6 +2092,12 @@ TRY_AGAIN:
 	
 	// Disable interrupts for this Q only
 #ifdef LL_DISABLE_IQR
+	/*
+	 * When in low-latency mode interrupts continue at a very high
+	 * rate and cause latency issues and decreased throughput.
+	 * Disabling the interrupts here and only re-enabling them
+	 * once the flush is complete increases TPS and reduces latency.
+	 */
 	ixgbe_irq_disable_queues(adapter, ((u64)1 << q_vector->v_idx));
 #endif  // LL_DISABLE_IQR
 
@@ -3085,13 +3092,19 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 	{
 	
 #ifdef LL_DISABLE_IQR
+		/*
+		 * If interrupts are disabled a check is performed
+		 * to determine if the flush is complete. If so
+		 * interrupts are enabled here. If not interrupts
+		 * continue to remain disabled until the flush
+		 * completes.
+		 */
 		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
 			u64 eics = ((u64)1 << q_vector->v_idx);
-			ixgbe_irq_enable_queues(adapter, eics);
-//			if (!rx_clean_complete)
-//			if ((!rx_clean_complete)||(pack_recv == 0)||non_target_packet_rec)
+			if (!found_data)
+				ixgbe_irq_enable_queues(adapter, eics);
 			if ((!rx_clean_complete) || (pack_recv == 0) ||
-	            ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
+			    (test_bit(IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
 				ixgbe_irq_rearm_queues(adapter, eics);
 		}
 #else
