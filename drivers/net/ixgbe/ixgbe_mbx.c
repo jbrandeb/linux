@@ -465,4 +465,3 @@ void ixgbe_init_mbx_params_pf(struct ixgbe_hw *hw)
 	mbx->stats.acks = 0;
 	mbx->stats.rsts = 0;
 }
-

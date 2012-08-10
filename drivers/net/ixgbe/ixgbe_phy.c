@@ -1064,8 +1064,8 @@ s32 ixgbe_identify_sfp_module_generic(struct ixgbe_hw *hw)
 		}
 
 		/* Verify supporteed 1G SFP modules */
-		if (comp_codes_10g == 0 && 
-		    !(hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core1 || 
+		if (comp_codes_10g == 0 &&
+		    !(hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core1 ||
 		      hw->phy.sfp_type == ixgbe_sfp_type_1g_cu_core0)) {
 			hw->phy.type = ixgbe_phy_sfp_unsupported;
 			status = IXGBE_ERR_SFP_NOT_SUPPORTED;
@@ -1126,8 +1126,8 @@ s32 ixgbe_get_sfp_init_sequence_offsets(struct ixgbe_hw *hw,
 		return IXGBE_ERR_SFP_NOT_SUPPORTED;
 
 	/*
-	 * Limiting active cables and 1G Phys must be initialized as 
-	 * SR modules 
+	 * Limiting active cables and 1G Phys must be initialized as
+	 * SR modules
 	 */
 	if (sfp_type == ixgbe_sfp_type_da_act_lmt_core0 ||
 	    sfp_type == ixgbe_sfp_type_1g_cu_core0)
@@ -1731,4 +1731,3 @@ s32 ixgbe_tn_check_overtemp(struct ixgbe_hw *hw)
 out:
 	return status;
 }
-

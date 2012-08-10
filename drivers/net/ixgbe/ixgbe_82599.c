@@ -185,8 +185,8 @@ s32 ixgbe_setup_sfp_modules_82599(struct ixgbe_hw *hw)
 		                 ~IXGBE_AUTOC_LMS_MASK) |
                                   IXGBE_AUTOC_AN_RESTART));
 
-	       	/* Wait for AN to leave state 0 */
-       		for (i = 0; i < 10; i++) {
+		/* Wait for AN to leave state 0 */
+		for (i = 0; i < 10; i++) {
 			msleep(4);
 			reg_anlp1 = IXGBE_READ_REG(hw, IXGBE_ANLP1);
 			if (reg_anlp1 & IXGBE_ANLP1_AN_STATE_MASK)

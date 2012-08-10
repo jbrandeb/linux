@@ -34,7 +34,7 @@
 
 /* Ethernet payload size for FCoE to be able to carry full sized FC Frames
  * 14 byte FCoE header + 24 byte FC header + 2112 max payload + 4 byte CRC
- * 	+ 4 byte FCoE trailing encapsulation = 2158
+ *	+ 4 byte FCoE trailing encapsulation = 2158
  * This is the Ethernet payload, replacing the default of 1500, and does
  * not include Ethernet headers, VLAN tags, or Ethernet CRC.
  */
@@ -77,4 +77,3 @@ void ixgbe_sysfs_remove(struct ixgbe_adapter *adapter)
 		device_remove_file(&netdev->dev, &ixgbe_attrs[i]);
 }
 #endif /* IXGBE_FCOE */
-

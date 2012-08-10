@@ -111,10 +111,10 @@ static struct ixgbe_stats ixgbe_gstrings_stats[] = {
 	{"hw_rsc_aggregated", IXGBE_STAT(rsc_total_count)},
 	{"hw_rsc_flushed", IXGBE_STAT(rsc_total_flush)},
 	{"rx_flm", IXGBE_STAT(flm)},
-#ifdef HAVE_TX_MQ	
+#ifdef HAVE_TX_MQ
 	{"fdir_match", IXGBE_STAT(stats.fdirmatch)},
 	{"fdir_miss", IXGBE_STAT(stats.fdirmiss)},
-#endif /* HAVE_TX_MQ */	
+#endif /* HAVE_TX_MQ */
 #ifdef IXGBE_FCOE
 	{"fcoe_bad_fccrc", IXGBE_STAT(stats.fccrc)},
 	{"fcoe_last_errors", IXGBE_STAT(stats.fclast)},
@@ -205,7 +205,7 @@ static int ixgbe_get_settings(struct net_device *netdev,
 		} else if ((hw->device_id == IXGBE_DEV_ID_82599_COMBO_BACKPLANE) ||
 			   (hw->device_id == IXGBE_DEV_ID_82599_KX4_MEZZ)) {
 			ecmd->supported |= (SUPPORTED_1000baseT_Full |
-					    SUPPORTED_Autoneg | 
+					    SUPPORTED_Autoneg |
 					    SUPPORTED_FIBRE);
 			ecmd->advertising = (ADVERTISED_10000baseT_Full |
 					     ADVERTISED_1000baseT_Full |
@@ -2157,7 +2157,7 @@ static int ixgbe_wol_exclusion(struct ixgbe_adapter *adapter,
 	switch(hw->device_id) {
 	case IXGBE_DEV_ID_82599_COMBO_BACKPLANE:
 		/* All except this subdevice support WOL */
-		if (hw->subsystem_device_id == 
+		if (hw->subsystem_device_id ==
 		    IXGBE_SUBDEV_ID_82599_KX4_KR_MEZZ) {
 			wol->supported = 0;
 			break;
@@ -2280,7 +2280,7 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 		ec->rx_coalesce_usecs = 1000000/adapter->rx_eitr_param;
 		break;
 	}
-	
+
 #ifdef CONFIG_INET_LL_RX_FLUSH
 	ec->rx_coalesce_usecs_high = adapter->ll_wait_time;
 #endif  // CONFIG_INET_LL_RX_FLUSH
@@ -2303,7 +2303,7 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 		ec->tx_coalesce_usecs = 1000000/adapter->tx_eitr_param;
 		break;
 	}
-	
+
 	return 0;
 }
 
@@ -2442,20 +2442,20 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 			else if (q_vector->rxr_count)
 				/* rx only or mixed */
 				eitr = adapter->rx_eitr_param;
-				
+
 #ifdef LL_MULTI_PORT_QUICKEXIT
 			if ( eitr > LL_MULTI_PORT_INT_RATE ) // fast irq rate?
 			{
 				q_vector->ll_multiport_check = true;
-				
+
 				// clear data
-				
-				memset( &q_vector->ll_port_list[ 0 ], 0, 
+
+				memset( &q_vector->ll_port_list[ 0 ], 0,
 				         sizeof( q_vector->ll_port_list ));
 			}
 			else
 				q_vector->ll_multiport_check = false;
-				
+
 			q_vector->ll_multiport_quickexit = false;
 #endif // LL_MULTI_PORT_QUICKEXIT
 
@@ -2580,10 +2580,10 @@ skip_lro:
 
 #endif /* NETIF_F_NTUPLE */
 	if (need_reset) {
- 		if (netif_running(netdev))
- 			ixgbe_reinit_locked(adapter);
- 		else
- 			ixgbe_reset(adapter);
+		if (netif_running(netdev))
+			ixgbe_reinit_locked(adapter);
+		else
+			ixgbe_reset(adapter);
 	}
 
 	return 0;

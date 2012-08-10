@@ -74,7 +74,7 @@
 #define LL_MULTI_PORT_MAX_DATA_RATE        160000  // Maximum Queue data rate for multiport operation
 #define LL_MULTI_PORT_MIN_DATA_RATE         40000  // Minimum Queue data rate for multiport operation
 #define LL_LOOP_COUNT_MAX                       4  // Maximum times through LL loop for quickexit
-#define LOW_LATENCY_MAX_RATE_TIME           20000  // Ave Rate Time per packet for wait  
+#define LOW_LATENCY_MAX_RATE_TIME           20000  // Ave Rate Time per packet for wait
 
 // Probably desirable operation
 
@@ -84,7 +84,7 @@
 //#define LL_FLOW_CHANGE  1            // Output TX Flow Change Tag
 //#define LL_RX_QUEUE  1                  // Use RX Queue
 //#define LL_EXIT_ON_RX_NON_TARGET  1     // Exit for receive of non-target data
-//#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director 
+//#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director
 //#define LL_DISABLE_IRQ   1                // Disable IRQ for Queue during LL Processing
 #define LL_EXTENDED_STATS  1            // save extended stats for output by ethtool
 //#define LL_FLUSH_EPOLL   1		    // Eventpoll specific flush (for memcached)
@@ -95,13 +95,13 @@
 //#define LL_MULTI_PORT_QUICKEXIT  1      // Quick Exit on Multiple Port Queue Operation
 										  //   Note: LL_MULTI_PORT_QUICKEXIT needs LL_DATARATE
 //#define LL_LOOP_QUICKEXIT  1            // Quick Exit after several loops for tx
-//#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate 
+//#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate
 //#define LL_USE_NET_RECV_SKB  1          // use the netif_receive_skb() to receive packets
 
 // Information enables
 
 //#define LL_FLOW_CHANGE_DEBUG  1		  // Output TX Flow Change Debug
-//#define LL_CHECK_MATCH  1				  // Output LL Call, SMP, and Packet hit information 
+//#define LL_CHECK_MATCH  1				  // Output LL Call, SMP, and Packet hit information
 //#define LL_PROC_TIME_INFO  1            // Output LL process Time Info
 //#define LL_QUICKEXIT_INFO  1            // Output LL Quick Exit Info
 //#define LL_RX_FLOWDIR_DEBUG 1			// Output info about Flow Director change
@@ -275,7 +275,7 @@ struct ixgbe_rx_buffer {
 
 struct ixgbe_queue_stats {
 	u64 packets;
-	u64 bytes;	
+	u64 bytes;
 #ifdef LL_EXTENDED_STATS
 	u64 rx_flush_excute_tx_buf_cleared; // rx queue: ll flush execute count
 										// tx queue: ll flush n tx buf cleared by flush
@@ -377,14 +377,14 @@ struct ll_port {
 struct ll_rx_fdir_info {	// info needed for flow director
 
 	bool	valid_data;
-	
+
 	u32     dev_skb_id_ref;  // packet id for info
-	
+
 	u16		dst_port;
 	u16		src_port;
 	u32     src_ipv4_addr;
 	u32		dst_ipv4_addr;
-	
+
 	u8		l4type;
 	u16		flex_bytes;
 };
@@ -417,7 +417,7 @@ struct ixgbe_q_vector {
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
 	unsigned int last_flush_type;	// last flush operation type
-	
+
 #define IXGBE_DATA_SINCE_FLUSH   128  // to invalidate last_flush_type
 
 #ifdef LL_RX_QUEUE
@@ -425,7 +425,7 @@ struct ixgbe_q_vector {
 #endif // LL_RX_QUEUE
 
 	unsigned long ll_rx_flags;
-	
+
 #define IXGBE_LL_FLAG_RX_INT       1    // RX HW or SW Interrupt Processing since Start
 #define IXGBE_LL_FLAG_RX_OWNER     2    // RX Queue Owner
 #define IXGBE_LL_FLAG_RX_INT_OFF   3    // RX Interrupts are off (NAPI Enabled)
@@ -438,22 +438,22 @@ struct ixgbe_q_vector {
 #define IXGBE_LL_FLAG_INT_ABORTED  8    // RX interrupt process was aborted
 
 	cycles_t  last_irq_time;
-	
+
 #ifdef LL_HIGH_PACK_RATE_EXIT
 	cycles_t  last_rx_time;
 	u32       cyc_per_packet;
-#endif // 	LL_HIGH_PACK_RATE_EXIT
-	
-#define LL_RX_CYC_PER_PACK_TIME_MAX   3000000    // Max Packet record time 
+#endif //	LL_HIGH_PACK_RATE_EXIT
+
+#define LL_RX_CYC_PER_PACK_TIME_MAX   3000000    // Max Packet record time
                                                  //   (approx 1 ms)
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
 
 	bool   ll_irq_set_low;       // The Irq has been set low
 	u32    ll_eitr_save;         // Save eitr Setting
-		
+
 #endif  /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
-		
-#ifdef 	LL_CHECK_MATCH
+
+#ifdef	LL_CHECK_MATCH
 	unsigned int ll_exec, ll_miss, ll_hit, ll_timeout;
 	unsigned int smp_match, smp_miss, smp_count;
 #endif  /* LL_CHECK_MATCH */
@@ -487,7 +487,7 @@ struct ixgbe_q_vector {
 	bool ll_multiport_check;        // do multiport check
 	bool ll_multiport_quickexit;    // quick exit out of low latency flush
 	struct ll_port ll_port_list[ LL_MULTI_PORT_LIST_SIZE ];
-	
+
 	s8    ll_qexit_on_weight;  // Weight of quick exit being on
 #ifdef LL_QUICKEXIT_INFO
 	unsigned int ll_tog_count;      // number of toggles
@@ -498,9 +498,9 @@ struct ixgbe_q_vector {
 
 
 #ifdef LL_RX_FLOW_DIR_SET
-#define LL_FDIR_CNT			32	
+#define LL_FDIR_CNT			32
 #define LL_FDIR_MASK		0x1F	// matches	LL_FDIR_CNT
-	
+
 	int ll_cur_rx_fdir_info_id;			// current FDIR array values
 
 	struct ll_rx_fdir_info ll_rx_fdir[ LL_FDIR_CNT ];	// info needed for flow director

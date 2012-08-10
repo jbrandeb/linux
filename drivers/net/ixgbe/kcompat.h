@@ -316,7 +316,7 @@ enum {
 #if !defined(IXGBE_DCA) && !defined(IGB_DCA)
 #define dca_get_tag(b) 0
 #define dca_add_requester(a) -1
-#define dca_remove_requester(b) do { } while(0) 
+#define dca_remove_requester(b) do { } while(0)
 #define DCA_PROVIDER_ADD     0x0001
 #define DCA_PROVIDER_REMOVE  0x0002
 #endif
@@ -1041,7 +1041,7 @@ static inline struct device *pci_dev_to_dev(struct pci_dev *pdev)
 	return (struct device *) pdev;
 }
 
-#define pdev_printk(lvl, pdev, fmt, args...) 	\
+#define pdev_printk(lvl, pdev, fmt, args...)	\
 	printk("%s %s: " fmt, lvl, pci_name(pdev), ## args)
 #define dev_err(dev, fmt, args...)            \
 	pdev_printk(KERN_ERR, to_pci_dev(dev), fmt, ## args)

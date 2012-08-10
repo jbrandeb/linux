@@ -34,20 +34,20 @@ struct sk_buff *
 _kc_skb_pad(struct sk_buff *skb, int pad)
 {
         struct sk_buff *nskb;
-        
+
         /* If the skbuff is non linear tailroom is always zero.. */
         if(skb_tailroom(skb) >= pad)
         {
                 memset(skb->data+skb->len, 0, pad);
                 return skb;
         }
-        
+
         nskb = skb_copy_expand(skb, skb_headroom(skb), skb_tailroom(skb) + pad, GFP_ATOMIC);
         kfree_skb(skb);
         if(nskb)
                 memset(nskb->data+nskb->len, 0, pad);
         return nskb;
-} 
+}
 #endif /* < 2.4.21 */
 
 /*****************************************************************************/

@@ -53,4 +53,3 @@ int ixgbe_ndo_get_vf_config(struct net_device *netdev,
 void ixgbe_dump_registers(struct ixgbe_adapter *adapter);
 
 #endif /* _IXGBE_SRIOV_H_ */
-

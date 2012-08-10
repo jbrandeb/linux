@@ -400,13 +400,13 @@ static int ixgbe_nl_reply(u8 value, u8 cmd, u8 attr, struct genl_info *info)
 
 	ret = nla_put_u8(dcb_skb, attr, value);
 	if (ret)
-        	goto err;
+		goto err;
 
 	/* end the message, assign the nlmsg_len. */
 	genlmsg_end(dcb_skb, data);
 	ret = genlmsg_reply(dcb_skb, info);
 	if (ret)
-        	goto err;
+		goto err;
 
 	return 0;
 
@@ -1618,7 +1618,7 @@ static void ixgbe_dcbnl_setpfcstate(struct net_device *netdev, u8 state)
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 
 	adapter->temp_dcb_cfg.pfc_mode_enable = state;
-	if (adapter->temp_dcb_cfg.pfc_mode_enable != 
+	if (adapter->temp_dcb_cfg.pfc_mode_enable !=
 		adapter->dcb_cfg.pfc_mode_enable)
 		adapter->dcb_set_bitmap |= BIT_PFC;
 	return;
