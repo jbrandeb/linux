@@ -93,7 +93,7 @@
 //#define LL_MULTI_PORT_QUICKEXIT  1      // Quick Exit on Multiple Port Queue Operation
 										  //   Note: LL_MULTI_PORT_QUICKEXIT needs LL_DATARATE
 //#define LL_LOOP_QUICKEXIT  1            // Quick Exit after several loops for tx
-//#define LL_DISABLE_IRQ   1              // Disable IRQ for Queue during LL Processing
+#define LL_DISABLE_IRQ   1              // Disable IRQ for Queue during LL Processing
 //#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate 
 //#define LL_USE_NET_RECV_SKB  1          // use the netif_receive_skb() to receive packets
 
@@ -103,7 +103,7 @@
 //#define LL_CHECK_MATCH  1				  // Output LL Call, SMP, and Packet hit information 
 //#define LL_PROC_TIME_INFO  1            // Output LL process Time Info
 //#define LL_QUICKEXIT_INFO  1            // Output LL Quick Exit Info
-//#define LL_RX_FLOWDIR_DEBUG 1			// Output info about Flow Direcor change
+//#define LL_RX_FLOWDIR_DEBUG 1			// Output info about Flow Director change
 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 

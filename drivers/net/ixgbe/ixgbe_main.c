@@ -102,7 +102,7 @@ static const char ixgbe_driver_string[] =
 
 #define IXGBE_TIMING_TESTS
 
-#define DRV_VERSION "2.0.84.11-lls-r01" DRIVERNAPI DRV_HW_PERF FPGA
+#define DRV_VERSION "2.0.84.11-lls-r02" DRIVERNAPI DRV_HW_PERF FPGA
 const char ixgbe_driver_version[] = DRV_VERSION;
 static char ixgbe_copyright[] = "Copyright (c) 1999-2010 Intel Corporation.";
 /* ixgbe_pci_tbl - PCI Device ID Table
@@ -1815,6 +1815,7 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int cleaned_count = 0;
 	int current_node = numa_node_id();
 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+	int tcp_flags = 0, tcp_data_len = 0;
 #ifdef LL_RX_FLOW_DIR_SET
 	int f;
 #endif // LL_RX_FLOW_DIR_SET 
@@ -2474,7 +2475,15 @@ for ( ; ; ) {
 		{
 			struct tcphdr *th = (struct tcphdr *)(skb->data+(iph->ihl<<2));
             dest_port = th->dest;
+
+            tcp_flags = th->ack
+                      | th->psh << 1
+                      | th->rst << 2
+                      | th->syn << 3
+                      | th->fin << 4;
            
+           	tcp_data_len = ntohs(iph->tot_len) - (th->doff << 2) - sizeof(*iph);
+
 #ifdef LL_RX_FLOW_DIR_SET
 
 			pll_fdir_info->dst_port = dest_port;
@@ -2485,7 +2494,8 @@ for ( ; ; ) {
 #endif // LL_RX_FLOW_DIR_SET			
 
 			if ( dest_port == flush->input_port ) {
-				found_data = true;
+                if (tcp_flags > 1 || tcp_data_len)
+				    found_data = true;
 
 #ifdef LL_EXTENDED_STATS
 				rx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
@@ -2807,10 +2817,10 @@ next_desc:
 			tx_bytecount = ((segs - 1) * hlen) + skb->len;
 			tx_total_packets += segs;
 			tx_total_bytes += tx_bytecount;
-#else
+#else  // NETIF_F_TSO
 			tx_total_packets++;
 			tx_total_bytes += skb->len;
-#endif
+#endif  // NETIF_F_TSO
 		}
 		ixgbe_unmap_and_free_tx_resource(adapter,
 			                             tx_buffer_info);
@@ -2846,13 +2856,13 @@ next_desc:
 				netif_wake_subqueue(netdev, tx_ring->queue_index);
 				++tx_ring->restart_queue;
 			}
-#else
+#else  // HAVE_TX_MQ
 			if (netif_queue_stopped(netdev) &&
 				!test_bit(__IXGBE_DOWN, &adapter->state)) {
 				netif_wake_queue(netdev);
 				++tx_ring->restart_queue;
 			}
-#endif
+#endif  // HAVE_TX_MQ
 		}
 #ifdef LL_PROC_TIME_INFO
 		q_vector->ll_tx_prc_cyc += get_cycles() - ll_tx_start;
@@ -3092,35 +3102,17 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 	if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ) == 0 ) 
 #endif  // LL_ENTER_PEND_SWISR
 	{
-	
+		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
+			u64 eics = ((u64)1 << q_vector->v_idx);
 #ifdef LL_DISABLE_IRQ
-		/*
-		 * If interrupts are disabled a check is performed
-		 * to determine if the flush is complete. If so
-		 * interrupts are enabled here. If not interrupts
-		 * continue to remain disabled until the flush
-		 * completes.
-		 */
-		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
-			u64 eics = ((u64)1 << q_vector->v_idx);
-			ixgbe_irq_enable_queues(adapter, eics);
-			if ((!rx_clean_complete) || (pack_recv == 0) ||
-	            ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
-				ixgbe_irq_rearm_queues(adapter, eics);
-		}
-#else //LL_DISABLE_IRQ
-#if 0 // losses interrupts
-		if ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ) {
-			if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
-				u64 eics = ((u64)1 << q_vector->v_idx);
+			if (!found_data) {
 				ixgbe_irq_enable_queues(adapter, eics);
-				ixgbe_irq_rearm_queues(adapter, eics);
+				if ((!rx_clean_complete) || (pack_recv == 0) ||
+				( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 )) {
+					ixgbe_irq_rearm_queues(adapter, eics);
+				}
 			}
-		}
-#else	
-		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
-			u64 eics = ((u64)1 << q_vector->v_idx);
-		
+#else // LL_DISABLE_IRQ
 			if ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ) 
 			{
 				// check for abort race condition
@@ -3145,10 +3137,8 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 		             ( test_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags ) != 0 ) ||
 			         ( test_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags ) != 0 ))
 				ixgbe_irq_rearm_queues(adapter, eics);
-		}
-#endif			
-
 #endif // LL_DISABLE_IRQ
+		}
 	}
 	
 EXIT:
