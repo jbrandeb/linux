@@ -52,6 +52,15 @@
 #include "ixgbe_dcb_82599.h"
 #include "ixgbe_sriov.h"
 
+/**************************** Local Suboutines *******************************/
+
+static inline void ixgbe_irq_disable_queues(struct ixgbe_adapter *adapter,
+					    u64 qmask);
+static inline void ixgbe_irq_enable_queues(struct ixgbe_adapter *adapter,
+					   u64 qmask);
+
+/*************************** Added Local Vars ********************************/
+
 char ixgbe_driver_name[] = "ixgbe";
 static const char ixgbe_driver_string[] =
 			      "Intel(R) 10 Gigabit PCI Express Network Driver";
@@ -1747,6 +1756,12 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 	int ddp_bytes = 0;
 #endif /* IXGBE_FCOE */
 	u16 cleaned_count = ixgbe_desc_unused(rx_ring);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#ifndef IXGBE_FCOE
+	struct ixgbe_adapter *adapter = q_vector->adapter;
+#endif
+	bool ll_flush_op = false;
+#endif	/* CONFIG_INET_LL_RX_FLUSH */
 
 	do {
 		union ixgbe_adv_rx_desc *rx_desc;
@@ -1807,6 +1822,21 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		}
 
 #endif /* IXGBE_FCOE */
+#ifdef CONFIG_INET_LL_RX_FLUSH
+/***************** tag the packet for ll flush operation **********************/
+		/* Only in cpu per queue mode */
+		if (adapter->num_rx_queues == num_online_cpus()) {
+			ll_flush_op = true;
+
+			/* set info to pass to receive socket */
+			skb->dev_ref = q_vector;
+			q_vector->ll_last_dev_skb_id_ref++;
+			skb->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+			skb->recv_dev = adapter->netdev;
+		}
+/*****************************************************************************/
+
+#endif	/* CONFIG_INET_LL_RX_FLUSH */
 		ixgbe_rx_skb(q_vector, skb);
 
 		/* update budget accounting */
@@ -1838,9 +1868,280 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 	if (cleaned_count)
 		ixgbe_alloc_rx_buffers(rx_ring, cleaned_count);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+/*********************** flush exit processing *****************************/
+	if (total_rx_packets && ll_flush_op) {  /* Data received */
+		cycles_t rx_time = get_cycles();
+		q_vector->last_irq_time = rx_time;
+		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; /* Clear flush type */
+
+	}
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 	return !!budget;
 }
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+/******************************* Low Latency *********************************/
+static int ixgbe_low_latency_recv(struct net_device *netdev,
+				  struct dev_ll_flush *flush)
+{
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
+	struct ixgbe_q_vector *q_vector = flush->dev_ref;
+	struct ixgbe_ring  *rx_ring;
+	u16 cleaned_count = 0;
+	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+	int tcp_flags = 0, tcp_data_len = 0;
+#ifdef IXGBE_FCOE
+	int ddp_bytes = 0;
+#endif /* IXGBE_FCOE */
+
+	int pack_recv = 0;
+	bool found_data = false;
+	cycles_t ll_rx_start_time;
+	int q_vectors, vector;
+	bool rx_clean_complete = true;
+	int  exit_stat = INET_LL_RX_FLUSH_OP;
+
+	ll_rx_start_time = get_cycles();
+
+	if (test_bit(__IXGBE_DOWN, &adapter->state))
+		return INET_LL_RX_FLUSH_IMM_EXIT;   /* Exit if driver has become disabled */
+
+	/* Check for operating in a mode of a data queue per cpu */
+	if (adapter->num_rx_queues < num_online_cpus())
+		return INET_LL_RX_FLUSH_IMM_EXIT;
+
+	/* Validata Q Vector: q_vector */
+	q_vectors = adapter->num_msix_vectors - NON_Q_VECTORS;
+	for (vector = 0; vector < q_vectors; vector++) {
+		if (q_vector == adapter->q_vector[vector])
+			break;
+	}
+	if (vector == q_vectors) { /* Queue Not found? */
+
+		printk("IXGBE: Low Latency RX Q not found\n");
+		return INET_LL_RX_FLUSH_IMM_EXIT;
+	}
+
+	/* *** Valid q_vector *** */
+
+	/* Check for race between Low Latency Input and RX IRQ Input */
+	if ((ll_rx_start_time - q_vector->last_irq_time) < LOW_LATENCY_RX_INPUT_RACE)
+		return INET_LL_RX_FLUSH_IMM_EXIT; /* Very Recent RX input, Just assume that target data was received */
+
+	/* acquire queue ownership, exit if irq or napi is in progress */
+	if (test_and_set_bit(IXGBE_LL_FLAG_OWNER, &q_vector->ll_rx_flags) != 0)
+		return INET_LL_RX_FLUSH_IMM_EXIT;
+
+	preempt_disable();
+	ixgbe_irq_disable_queues(adapter, ((u64)1 << q_vector->v_idx));
+
+	/* Make sure ring is owned by current processor */
+
+	ixgbe_for_each_ring(rx_ring, q_vector->rx) {
+		if (rx_ring->queue_index == smp_processor_id())
+			break;
+	}
+
+	if (!rx_ring) { /* smp Processor not associated with queue */
+		exit_stat = INET_LL_RX_FLUSH_NO_SMP_MATCH;
+		goto EXIT_RELEASE_OWNERSHIP;
+	}
+
+
+	q_vector->last_flush_type = flush->flush_type;
+
+/********************* Flush Process Time Information ************************/
+
+
+/**************** Loop to Wait and/or Processes Receive Data *****************/
+
+poll_start:
+	for (;;) {
+		union ixgbe_adv_rx_desc *rx_desc;
+		struct sk_buff *skb;
+
+		/* return some buffers to hardware, one at a time is too slow */
+		if (cleaned_count >= IXGBE_RX_BUFFER_WRITE) {
+			ixgbe_alloc_rx_buffers(rx_ring, cleaned_count);
+			cleaned_count = 0;
+		}
+
+		rx_desc = IXGBE_RX_DESC(rx_ring, rx_ring->next_to_clean);
+
+		if (!ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_DD))
+			break;
+
+		/*
+		 * This memory barrier is needed to keep us from reading
+		 * any other fields out of the rx_desc until we know the
+		 * RXD_STAT_DD bit is set
+		 */
+		rmb();
+
+		/* retrieve a buffer from the ring */
+		skb = ixgbe_fetch_rx_buffer(rx_ring, rx_desc);
+
+		/* exit if we failed to retrieve a buffer */
+		if (!skb)
+			break;
+
+		ixgbe_get_rsc_cnt(rx_ring, rx_desc, skb);
+
+		cleaned_count++;
+		pack_recv++;
+
+		/* place incomplete frames back on ring for completion */
+		if (ixgbe_is_non_eop(rx_ring, rx_desc, skb))
+			continue;
+
+		/* verify the packet layout is correct */
+		if (ixgbe_cleanup_headers(rx_ring, rx_desc, skb))
+			continue;
+
+		/* probably a little skewed due to removing CRC */
+		total_rx_bytes += skb->len;
+		total_rx_packets++;
+
+		/* populate checksum, timestamp, VLAN, and protocol */
+		ixgbe_process_skb_fields(rx_ring, rx_desc, skb);
+
+#ifdef IXGBE_FCOE
+		/* if ddp, not passing to ULD unless for FCP_RSP or error */
+		if (ixgbe_rx_is_fcoe(rx_ring, rx_desc)) {
+			ddp_bytes = ixgbe_fcoe_ddp(adapter, rx_desc, skb);
+			if (!ddp_bytes) {
+				dev_kfree_skb_any(skb);
+				continue;
+			}
+		}
+
+#endif /* IXGBE_FCOE */
+/****************************** New Packet ***********************************/
+
+		/* set info to pass to receive socket */
+		skb->dev_ref = q_vector;
+		q_vector->ll_last_dev_skb_id_ref++;
+		skb->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+		skb->recv_dev = adapter->netdev;
+
+/*********************** packet specific protocol Info ***********************/
+
+		/* check for found packet */
+		if (skb->protocol == __constant_htons(ETH_P_IP)) {
+			struct iphdr *iph = (struct iphdr *)skb->data;
+			struct udphdr *uh;
+			struct tcphdr *th;
+
+			switch (iph->protocol) {
+			case IPPROTO_UDP:
+				uh = (struct udphdr *)(skb->data+(iph->ihl<<2));
+
+				if (uh->dest == flush->input_port)
+					found_data = true;
+				break;
+			case IPPROTO_TCP:
+				th = (struct tcphdr *)(skb->data+(iph->ihl<<2));
+
+				tcp_flags = th->ack
+					  | th->psh << 1
+					  | th->rst << 2
+					  | th->syn << 3
+					  | th->fin << 4;
+
+				tcp_data_len = ntohs(iph->tot_len) - (th->doff << 2) - sizeof(*iph);
+
+				if (th->dest == flush->input_port) {
+					if (tcp_flags > 1 || tcp_data_len)
+						found_data = true;
+				}
+				break;
+			default:
+				break;
+			}
+		}
+
+		netif_rx_ni(skb);  /* This runs SWISRs after RX operation */
+
+/*****************************************************************************/
+
+		if (pack_recv >= LOW_LATENCY_RX_EXIT_MAX) {  /* Low Latency Exit Max RX */
+			rx_clean_complete = false;  /* Not sure if all were cleared */
+			goto RX_DONE;
+		}
+	}
+
+
+/************************** Check for loop exit ******************************/
+
+	if ((found_data) ||    /* Exit if any data for the interface was found */
+		/* Exit, data been received in queue, but no new data for this time through loop */
+	    (pack_recv >= LOW_LATENCY_RX_EXIT_COUNT) || /* Exit, moderate number of packets */
+		/* Exit on having waited a maximum time */
+	    ((get_cycles() - ll_rx_start_time) > adapter->ll_wait_time))
+		goto RX_DONE; /* Exit Loop */
+
+/*********** Didn't Exit, put any queued bufs in network stack ***************/
+
+	goto poll_start;
+
+RX_DONE:
+
+/********************** Buffer RX exit processing ****************************/
+
+	if (pack_recv) { /* Only Do Exit Processing if a packet was Received */
+		cleaned_count = ixgbe_desc_unused(rx_ring);
+		if (cleaned_count)
+			ixgbe_alloc_rx_buffers(rx_ring, cleaned_count);
+
+#ifdef IXGBE_FCOE
+		/* include DDPed FCoE data */
+		if (ddp_bytes > 0) {
+			unsigned int mss;
+
+			mss = netdev->mtu - sizeof(struct fcoe_hdr) -
+				sizeof(struct fc_frame_header) -
+				sizeof(struct fcoe_crc_eof);
+			if (mss > 512)
+				mss &= ~511;
+			total_rx_bytes += ddp_bytes;
+			total_rx_packets += DIV_ROUND_UP(ddp_bytes, mss);
+		}
+#endif /* IXGBE_FCOE */
+
+		u64_stats_update_begin(&rx_ring->syncp);
+		rx_ring->stats.packets += total_rx_packets;
+		rx_ring->stats.bytes += total_rx_bytes;
+		u64_stats_update_end(&rx_ring->syncp);
+		q_vector->rx.total_packets += total_rx_packets;
+		q_vector->rx.total_bytes += total_rx_bytes;
+
+		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; /* Clear flush type */
+	}
+
+/*********************** Reenable normal processing **************************/
+
+EXIT_RELEASE_OWNERSHIP:
+	/* Release Queue Ownership */
+	clear_bit(IXGBE_LL_FLAG_OWNER, &q_vector->ll_rx_flags);
+	smp_mb__after_clear_bit();
+
+
+	/* Reenable Interrupts for this Queue */
+	if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
+		u64 eics = ((u64)1 << q_vector->v_idx);
+		if ((!rx_clean_complete) || (pack_recv == 0))
+			ixgbe_irq_rearm_queues(adapter, eics);
+		ixgbe_irq_enable_queues(adapter, eics);
+	}
+
+
+	preempt_enable();
+	return exit_stat;
+}
+
+/*****************************************************************************/
+#endif	/* CONFIG_INET_LL_RX_FLUSH */
 /**
  * ixgbe_configure_msix - Configure MSI-X hardware
  * @adapter: board private structure
@@ -2387,6 +2688,24 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 	int per_ring_budget;
 	bool clean_complete = true;
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	/* Get RX Queue Ownership */
+	if (test_and_set_bit(IXGBE_LL_FLAG_OWNER, &q_vector->ll_rx_flags) != 0)	{
+		/* Did not obtain lock, but did HW interrupt */
+
+		napi_complete(napi);
+
+		if (test_bit(IXGBE_LL_FLAG_OWNER, &q_vector->ll_rx_flags) != 0)
+			set_bit(IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags);
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
+			/* rearm for race case */
+			u64 eics = ((u64)1 << q_vector->v_idx);
+			ixgbe_irq_rearm_queues(adapter, eics);
+		}
+		return 0;
+	}
+
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 #ifdef CONFIG_IXGBE_DCA
 	if (adapter->flags & IXGBE_FLAG_DCA_ENABLED)
 		ixgbe_update_dca(q_vector);
@@ -2406,6 +2725,10 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 		clean_complete &= ixgbe_clean_rx_irq(q_vector, ring,
 						     per_ring_budget);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	clear_bit(IXGBE_LL_FLAG_OWNER, &q_vector->ll_rx_flags); /* release */
+
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 	/* If all work not completed, return budget and keep polling */
 	if (!clean_complete)
 		return budget;
@@ -3591,6 +3914,9 @@ static void ixgbe_napi_enable_all(struct ixgbe_adapter *adapter)
 	for (q_idx = 0; q_idx < q_vectors; q_idx++) {
 		q_vector = adapter->q_vector[q_idx];
 		napi_enable(&q_vector->napi);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+		q_vector->ll_rx_flags = 0;  /* LL Map */
+#endif	/* CONFIG_INET_LL_RX_FLUSH */
 	}
 }
 
@@ -4530,6 +4856,10 @@ static int __devinit ixgbe_sw_init(struct ixgbe_adapter *adapter)
 		e_dev_err("EEPROM initialization failed\n");
 		return -EIO;
 	}
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME;
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 
 	set_bit(__IXGBE_DOWN, &adapter->state);
 
@@ -6909,6 +7239,9 @@ static const struct net_device_ops ixgbe_netdev_ops = {
 	.ndo_fdb_add		= ixgbe_ndo_fdb_add,
 	.ndo_fdb_del		= ixgbe_ndo_fdb_del,
 	.ndo_fdb_dump		= ixgbe_ndo_fdb_dump,
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	.ndo_low_lat_rx_flush	= ixgbe_low_latency_recv,
+#endif
 };
 
 static void __devinit ixgbe_probe_vf(struct ixgbe_adapter *adapter,

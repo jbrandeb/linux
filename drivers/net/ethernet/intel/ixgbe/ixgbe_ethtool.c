@@ -2063,6 +2063,10 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 	else
 		ec->rx_coalesce_usecs = adapter->rx_itr_setting >> 2;
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	ec->rx_coalesce_usecs_high = adapter->ll_wait_time;
+
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
 	/* if in mixed tx/rx queues per vector mode, report only rx settings */
 	if (adapter->q_vector[0]->tx.count && adapter->q_vector[0]->rx.count)
 		return 0;
@@ -2165,6 +2169,16 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 		ixgbe_write_eitr(q_vector);
 	}
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	if (ec->rx_coalesce_usecs_high != 0) {
+		adapter->ll_wait_time = ec->rx_coalesce_usecs_high;
+		if (adapter->ll_wait_time < LOW_LATENCY_WAIT_TIME_MIN)
+			adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME_MIN;
+		else if (adapter->ll_wait_time > LOW_LATENCY_WAIT_TIME_MAX)
+			adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME_MAX;
+	}
+
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
 	/*
 	 * do reset here at the end to make sure EITR==0 case is handled
 	 * correctly w.r.t stopping tx, and changing TXDCTL.WTHRESH settings

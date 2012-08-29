@@ -53,6 +53,23 @@
 #include <linux/dca.h>
 #endif
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+/* Tuning */
+
+#define LOW_LATENCY_RX_INPUT_RACE	         1500  /* Previous Input SWISR Input Time */
+#define LOW_LATENCY_RX_SINCE_START_TIME	     2000  /* RX Reeived After Start */
+#define LOW_LATENCY_WAIT_TIME			   150000  /* Default Low Latency wait delay */
+#define LOW_LATENCY_WAIT_TIME_MIN		      250  /* Minimum Low Latency wait delay */
+#define LOW_LATENCY_WAIT_TIME_MAX	      5000000  /* Maximum Low Latency wait delay */
+#define LOW_LATENCY_RX_EXIT_COUNT              16  /* Exit for number of mismatches */
+#define LOW_LATENCY_RX_EXIT_MAX                64  /* Allway sExit when number of buffers rx */
+#define LL_MULTI_PORT_MAX_DATA_RATE        160000  /* Maximum Queue data rate for multiport operation */
+#define LL_MULTI_PORT_MIN_DATA_RATE         40000  /* Minimum Queue data rate for multiport operation */
+#define LL_LOOP_COUNT_MAX                       4  /* Maximum times through LL loop for quickexit */
+#define LOW_LATENCY_MAX_RATE_TIME           20000  /* Ave Rate Time per packet for wait */
+
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
 /* common prefix used by pr_<> macros */
 #undef pr_fmt
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -335,6 +352,18 @@ struct ixgbe_q_vector {
 	struct rcu_head rcu;	/* to avoid race with update stats on free */
 	char name[IFNAMSIZ + 9];
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	unsigned int last_flush_type;	/* last flush operation type */
+#define IXGBE_DATA_SINCE_FLUSH   128  /* to invalidate last_flush_type */
+	unsigned long ll_rx_flags;
+#define IXGBE_LL_FLAG_OWNER	   1    /* RX Queue Owner */
+#define IXGBE_LL_FLAG_INT_ABORTED  8    /* RX interrupt process was aborted */
+	cycles_t  last_irq_time;
+#define LL_RX_CYC_PER_PACK_TIME_MAX   3000000   /* Max Packet record time */
+						/*   (approx 1 ms) */
+	u32	ll_last_dev_skb_id_ref;	/* local dev id of last skb */
+
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
 	/* for dynamic allocation of rings associated with this q_vector */
 	struct ixgbe_ring ring[0] ____cacheline_internodealigned_in_smp;
 };
@@ -579,6 +608,9 @@ struct ixgbe_adapter {
 #ifdef CONFIG_IXGBE_HWMON
 	struct hwmon_buff ixgbe_hwmon_buff;
 #endif /* CONFIG_IXGBE_HWMON */
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	unsigned int ll_wait_time;
+#endif  /* CONFIG_INET_LL_RX_FLUSH */
 };
 
 struct ixgbe_fdir_filter {
