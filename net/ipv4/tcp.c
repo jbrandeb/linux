@@ -1437,6 +1437,27 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 
 	if (sk->sk_state == TCP_LISTEN)
 		return -ENOTCONN;
+
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+	if (skb_queue_empty(&sk->sk_receive_queue)) {
+		/* no data, try low latency interface receive flush */
+		if ((sk->sk_state == TCP_ESTABLISHED) &&
+			sk->flush.dev_ref) { /* last buffer from low latency port? */
+			if (sk->last_recv_dev != NULL) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if (dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush) {
+					release_sock(sk);
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
+					dev->netdev_ops->ndo_low_lat_rx_flush(dev, &sk->flush);
+					lock_sock(sk);
+				}
+			}
+		}
+	}
+	sk->flush.try_flush = false;
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 	while ((skb = tcp_recv_skb(sk, seq, &offset)) != NULL) {
 		if (offset < skb->len) {
 			int used;
@@ -1471,6 +1492,15 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			if (!skb || (offset+1 != skb->len))
 				break;
 		}
+
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+		/* save device info in socket struct for next receive ops */
+		sk->last_recv_dev = skb->recv_dev;
+		sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
+		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+		sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 		if (tcp_hdr(skb)->fin) {
 			sk_eat_skb(sk, skb, false);
 			++seq;
@@ -1481,6 +1511,13 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			break;
 		tp->copied_seq = seq;
 	}
+
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+	if ((copied > 0) && (skb_queue_empty(&sk->sk_receive_queue)) &&
+		(sk->sk_state == TCP_ESTABLISHED))
+			sk->flush.try_flush = true;
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 	tp->copied_seq = seq;
 
 	tcp_rcv_space_adjust(sk);
@@ -1516,6 +1553,28 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
 
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+	bool low_lat_flush = false;
+
+	if (skb_queue_empty(&sk->sk_receive_queue)) {
+
+		/* no data, try low latency interface receive flush */
+		if ((sk->sk_state == TCP_ESTABLISHED) &&
+			sk->flush.dev_ref) { /* last buffer from low latency port? */
+			if (sk->last_recv_dev != NULL) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if (dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
+					dev->netdev_ops->ndo_low_lat_rx_flush(dev, &sk->flush);
+					low_lat_flush = true;
+				}
+			}
+		}
+	}
+	sk->flush.try_flush = false;
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 	lock_sock(sk);
 
 	err = -ENOTCONN;
@@ -1610,6 +1669,12 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			     *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt, flags);
 		}
 
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+		/* At end of queue */
+		if (!skb && (sk->sk_state == TCP_ESTABLISHED))
+			sk->flush.try_flush = true;
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 		/* Well, if we have backlog, try to process it now yet. */
 
 		if (copied >= target && !sk->sk_backlog.tail)
@@ -1814,6 +1879,13 @@ do_prequeue:
 					break;
 				}
 			}
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+			/* save device info in socket struct for next receive ops */
+			sk->last_recv_dev = skb->recv_dev;
+			sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
+			sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+			sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+#endif  /* CONFIG_INET_LL_TCP_RX_FLUSH */
 		}
 
 		*seq += used;

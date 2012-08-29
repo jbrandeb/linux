@@ -4784,6 +4784,13 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 				tp->copied_seq += chunk;
 				eaten = (chunk == skb->len);
 				tcp_rcv_space_adjust(sk);
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+				/* save device info in socket struct for next receive ops */
+				sk->last_recv_dev = skb->recv_dev;
+				sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
+				sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+				sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 			}
 			local_bh_disable();
 		}
@@ -5351,6 +5358,13 @@ static int tcp_copy_to_iovec(struct sock *sk, struct sk_buff *skb, int hlen)
 		tp->ucopy.len -= chunk;
 		tp->copied_seq += chunk;
 		tcp_rcv_space_adjust(sk);
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+		/* save device info in socket struct for next receive ops */
+		sk->last_recv_dev = skb->recv_dev;
+		sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
+		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+		sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 	}
 
 	local_bh_disable();
@@ -5411,6 +5425,14 @@ static bool tcp_dma_try_early_copy(struct sock *sk, struct sk_buff *skb,
 		tp->copied_seq += chunk;
 		tcp_rcv_space_adjust(sk);
 
+#ifdef CONFIG_INET_LL_TCP_RX_FLUSH
+		/* save device info in socket struct for next receive ops */
+		sk->last_recv_dev = skb->recv_dev;
+		sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
+		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+		sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+
+#endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 		if ((tp->ucopy.len == 0) ||
 		    (tcp_flag_word(tcp_hdr(skb)) & TCP_FLAG_PSH) ||
 		    (atomic_read(&sk->sk_rmem_alloc) > (sk->sk_rcvbuf >> 1))) {
