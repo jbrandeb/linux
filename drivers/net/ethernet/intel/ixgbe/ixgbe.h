@@ -72,6 +72,7 @@
 /* Probably desirable operation */
 
 #define LL_RX_FLUSH_TX  1               /* Include TX Buff Removal in Low Latency RX Proc */
+#define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   /* Include IRQ Rate increase for no Data */
 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 /* common prefix used by pr_<> macros */
@@ -365,6 +366,10 @@ struct ixgbe_q_vector {
 	cycles_t  last_irq_time;
 #define LL_RX_CYC_PER_PACK_TIME_MAX   3000000   /* Max Packet record time */
 						/*   (approx 1 ms) */
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+	bool   ll_irq_set_low;       /* The Irq has been set low */
+	u16    ll_eitr_save;         /* Save eitr Setting */
+#endif  /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
 	u32	ll_last_dev_skb_id_ref;	/* local dev id of last skb */
 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
@@ -397,6 +402,7 @@ struct hwmon_buff {
  * with the first 3 bits reserved 0
  */
 #define IXGBE_MIN_RSC_ITR	24
+#define IXGBE_MIN_ITR		8
 #define IXGBE_100K_ITR		40
 #define IXGBE_20K_ITR		200
 #define IXGBE_10K_ITR		400

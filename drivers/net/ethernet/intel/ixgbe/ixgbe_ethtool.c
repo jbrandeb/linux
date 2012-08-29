@@ -2066,7 +2066,7 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 #ifdef CONFIG_INET_LL_RX_FLUSH
 	ec->rx_coalesce_usecs_high = adapter->ll_wait_time;
 
-#endif  /* CONFIG_INET_LL_RX_FLUSH */
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 	/* if in mixed tx/rx queues per vector mode, report only rx settings */
 	if (adapter->q_vector[0]->tx.count && adapter->q_vector[0]->rx.count)
 		return 0;
@@ -2167,6 +2167,11 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 			/* rx only or mixed */
 			q_vector->itr = rx_itr_param;
 		ixgbe_write_eitr(q_vector);
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+
+		q_vector->ll_irq_set_low = false;
+		q_vector->ll_eitr_save = q_vector->itr;
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
 	}
 
 #ifdef CONFIG_INET_LL_RX_FLUSH

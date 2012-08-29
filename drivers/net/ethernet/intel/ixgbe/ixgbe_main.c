@@ -1874,7 +1874,17 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		cycles_t rx_time = get_cycles();
 		q_vector->last_irq_time = rx_time;
 		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; /* Clear flush type */
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+/************* restore interrrupt rate if had been increased *****************/
+		if (q_vector->ll_irq_set_low) {  /* if IRQ rate has been changed */
 
+			q_vector->itr = q_vector->ll_eitr_save;
+
+			q_vector->ll_irq_set_low = false;
+
+			ixgbe_write_eitr(q_vector);  /* restore eitr */
+		}
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
 	}
 #endif /* CONFIG_INET_LL_RX_FLUSH */
 	return !!budget;
@@ -2239,6 +2249,32 @@ RX_DONE:
 		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; /* Clear flush type */
 	}
 
+/************************** Adjust Interrupt Rate ****************************/
+
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+	if (!found_data) { /* Didn't Find Data, Adjust Interrupt Rate to Max */
+		if (!q_vector->ll_irq_set_low) {
+			u32 eitr;
+
+			if (adapter->flags2 & IXGBE_FLAG2_RSC_ENABLED)
+				eitr = IXGBE_MIN_RSC_ITR;
+			else
+				eitr = IXGBE_MIN_ITR;
+
+			/* Can change to Faster IRQ Rate */
+			if (eitr > q_vector->itr) {
+				q_vector->ll_irq_set_low = true;
+				q_vector->ll_eitr_save = q_vector->itr;
+
+				q_vector->itr = eitr;
+
+				/* Set new interrupt rate for vector */
+				ixgbe_write_eitr(q_vector);
+			}
+		}
+	}
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
+
 /*********************** Reenable normal processing **************************/
 
 EXIT_RELEASE_OWNERSHIP:
@@ -2377,7 +2413,12 @@ static void ixgbe_update_itr(struct ixgbe_q_vector *q_vector,
 	 *  20-1249MB/s bulk   (8000 ints/s)
 	 */
 	/* what was last interrupt timeslice? */
-	timepassed_us = q_vector->itr >> 2;
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+	if (q_vector->ll_irq_set_low)
+		timepassed_us = q_vector->ll_eitr_save >> 2;
+	else
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
+		timepassed_us = q_vector->itr >> 2;
 	bytes_perint = bytes / timepassed_us; /* bytes/usec */
 
 	switch (itr_setting) {
@@ -2441,13 +2482,20 @@ void ixgbe_write_eitr(struct ixgbe_q_vector *q_vector)
 
 static void ixgbe_set_itr(struct ixgbe_q_vector *q_vector)
 {
-	u32 new_itr = q_vector->itr;
+	u32 new_itr, eitr;
 	u8 current_itr;
 
 	ixgbe_update_itr(q_vector, &q_vector->tx);
 	ixgbe_update_itr(q_vector, &q_vector->rx);
 
 	current_itr = max(q_vector->rx.itr, q_vector->tx.itr);
+
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+	if (q_vector->ll_irq_set_low)
+		eitr = q_vector->ll_eitr_save;
+	else
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
+		eitr = q_vector->itr;
 
 	switch (current_itr) {
 	/* counts and packets in update_itr are dependent on these numbers */
@@ -2461,17 +2509,23 @@ static void ixgbe_set_itr(struct ixgbe_q_vector *q_vector)
 		new_itr = IXGBE_8K_ITR;
 		break;
 	default:
+		new_itr = eitr;
 		break;
 	}
 
-	if (new_itr != q_vector->itr) {
+	if (new_itr != eitr) {
 		/* do an exponential smoothing */
-		new_itr = (10 * new_itr * q_vector->itr) /
-			  ((9 * new_itr) + q_vector->itr);
+		new_itr = (10 * new_itr * eitr) /
+			  ((9 * new_itr) + eitr);
 
 		/* save the algorithm value here */
 		q_vector->itr = new_itr;
 
+#ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+		q_vector->ll_irq_set_low = false;
+		q_vector->ll_eitr_save = new_itr; /* value to be restored */
+
+#endif /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
 		ixgbe_write_eitr(q_vector);
 	}
 }
