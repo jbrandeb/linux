@@ -1645,7 +1645,7 @@ static void ixgbe_add_rx_frag(struct ixgbe_ring *rx_ring,
 	skb->truesize += ixgbe_rx_bufsz(rx_ring);
 }
 
-static struct sk_buff *ixgbe_fetch_rx_buffer(struct ixgbe_ring *rx_ring,
+static noinline struct sk_buff *ixgbe_fetch_rx_buffer(struct ixgbe_ring *rx_ring,
 					     union ixgbe_adv_rx_desc *rx_desc)
 {
 	struct ixgbe_rx_buffer *rx_buffer;
