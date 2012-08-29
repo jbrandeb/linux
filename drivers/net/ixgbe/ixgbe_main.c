@@ -1818,9 +1818,6 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int cleaned_count = 0;
 	int current_node = numa_node_id();
 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
-#ifdef LL_RX_FLOW_DIR_SET
-	int f;
-#endif // LL_RX_FLOW_DIR_SET 
 #ifdef IXGBE_FCOE
 	int ddp_bytes = 0;
 #endif /* IXGBE_FCOE */
