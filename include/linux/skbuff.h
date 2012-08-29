@@ -395,6 +395,12 @@ struct sk_buff {
 	struct sock		*sk;
 	struct net_device	*dev;
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	void			*dev_ref;	/* buf's net device private ref */
+	u32			dev_skb_id_ref;	/* device's private skb ref id */
+	struct net_device	*recv_dev;	/* buf's privet net receive device */
+#endif /* CONFIG_INET_LL_RX_FLUSH */
+
 	/*
 	 * This is the control buffer. It is free to use for every
 	 * layer. Please put your private variables there. If you

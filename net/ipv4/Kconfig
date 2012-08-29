@@ -391,6 +391,20 @@ config INET_LRO
 
 	  If unsure, say Y.
 
+config INET_LL_RX_FLUSH
+	bool "Low Latency Receive Flush"
+	default n
+	---help---
+	  Support Low Latency Receive Queue Flush. For network card drivers which
+	  has support for the receive socket interface, when empty, to call into
+	  the device driver to flush packets into the IP stack for any packets on
+          the related device rx queue that has not been yet been processed by an
+	  interrupt.
+	  Note: Interrupts often have a delay to allow multiple packets to accumalate
+	  over a time period to prevent too high of an interrupt processing rate.
+
+	  If unsure, say N.
+
 config INET_DIAG
 	tristate "INET: socket monitoring interface"
 	default y

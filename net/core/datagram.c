@@ -163,6 +163,9 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned int flags,
 {
 	struct sk_buff *skb;
 	long timeo;
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	bool low_lat_flush = false;
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 	/*
 	 * Caller is allowed not to check sk->sk_err before skb_recv_datagram()
 	 */
@@ -183,6 +186,9 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned int flags,
 		unsigned long cpu_flags;
 		struct sk_buff_head *queue = &sk->sk_receive_queue;
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+NEW_PACKET:
+#endif
 		spin_lock_irqsave(&queue->lock, cpu_flags);
 		skb_queue_walk(queue, skb) {
 			*peeked = skb->peeked;
@@ -196,11 +202,42 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned int flags,
 			} else
 				__skb_unlink(skb, queue);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+			/* when queue empty, driver can be flushed */
+			if (skb_queue_empty(queue))
+				sk->flush.try_flush = true;
+
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 			spin_unlock_irqrestore(&queue->lock, cpu_flags);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+			/* save device info in socket struct for next receive ops */
+			sk->last_recv_dev = skb->recv_dev;
+			sk->flush.dev_ref = skb->dev_ref;  /* !NULL if dev does low latency ops */
+			sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
+			sk->flush.input_port = udp_hdr(skb)->dest;  /* save rx port for dev */
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 			return skb;
 		}
 		spin_unlock_irqrestore(&queue->lock, cpu_flags);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+		/* low latency interface receive flush */
+		if (sk->flush.dev_ref && !low_lat_flush) { /* last buffer from low latency port */
+			if (sk->last_recv_dev != NULL) {
+				struct net_device *dev = sk->last_recv_dev;
+
+				if (dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush) {
+					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
+					dev->netdev_ops->ndo_low_lat_rx_flush(dev, &sk->flush);
+
+					low_lat_flush = true;
+					goto NEW_PACKET; /* try to get flushed buffer */
+				}
+			}
+		}
+		sk->flush.try_flush = false; /* tried */
+
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 		/* User doesn't want to wait */
 		error = -EAGAIN;
 		if (!timeo)

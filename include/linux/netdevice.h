@@ -311,6 +311,19 @@ enum netdev_state_t {
 	__LINK_STATE_DORMANT,
 };
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+struct dev_ll_flush {					/* device flush */
+	void			*dev_ref;		/* buf's net dev reference pointer */
+	__be16			input_port;		/* input port of last buffer */
+	u8			flush_type;		/* type of flush operation */
+#define INET_LL_FLUSH_TYPE_SOCK 0
+#define INET_LL_FLUSH_TYPE_POLL 1
+	bool			try_flush;		/* pending flush for empty rx queue */
+	u32			dev_skb_id_ref;		/* device's private skb ref id */
+};
+
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 
 /*
  * This structure holds at boot time configured netdevice settings. They
@@ -1025,6 +1038,13 @@ struct net_device_ops {
 						struct netlink_callback *cb,
 						struct net_device *dev,
 						int idx);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#define INET_LL_RX_FLUSH_NO_SMP_MATCH	0	/* cpu mismatch detected */
+#define INET_LL_RX_FLUSH_IMM_EXIT	1	/* no operations performed */
+#define INET_LL_RX_FLUSH_OP		2	/* flush operations performed */
+	int			(*ndo_low_lat_rx_flush)(struct net_device *dev,
+							struct dev_ll_flush *flush);
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 };
 
 /*

@@ -2125,6 +2125,12 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	smp_wmb();
 	atomic_set(&sk->sk_refcnt, 1);
 	atomic_set(&sk->sk_drops, 0);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+	/* init net dev low latency flush vars */
+	sk->last_recv_dev = NULL;
+	memset(&sk->flush, 0, sizeof(sk->flush));
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 }
 EXPORT_SYMBOL(sock_init_data);
 
