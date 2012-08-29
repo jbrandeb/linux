@@ -102,7 +102,7 @@ static const char ixgbe_driver_string[] =
 
 #define IXGBE_TIMING_TESTS
 
-#define DRV_VERSION "2.0.84.11-ll" DRIVERNAPI DRV_HW_PERF FPGA
+#define DRV_VERSION "2.0.84.11-lls-r01" DRIVERNAPI DRV_HW_PERF FPGA
 const char ixgbe_driver_version[] = DRV_VERSION;
 static char ixgbe_copyright[] = "Copyright (c) 1999-2010 Intel Corporation.";
 /* ixgbe_pci_tbl - PCI Device ID Table
@@ -1744,7 +1744,7 @@ next_desc:
 		
 			ixgbe_write_eitr(q_vector);  // restore eitr
 
-		//	printk( "irq on\n" );
+//			printk( "irq on eitr %X\n", q_vector->eitr );
 		}
 #endif // LOW_LATENCY_UDP_TCP_IRQ_ADJ
 	}
@@ -1795,17 +1795,14 @@ next_desc:
 
 	return cleaned;
 }
-/******************************* Low Lanency *********************************/
+/******************************* Low Latency *********************************/
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
 static int ixgbe_low_latency_recv( struct net_device *netdev, 
 								   struct dev_ll_flush *flush )
-//								   void *dev_ref,
-//								   unsigned short in_port )
 {
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
-//	struct ixgbe_q_vector *q_vector = dev_ref;
 	struct ixgbe_q_vector *q_vector = flush->dev_ref;
 	struct ixgbe_ring  *rx_ring;
 	struct pci_dev *pdev = adapter->pdev;
@@ -1818,6 +1815,9 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int cleaned_count = 0;
 	int current_node = numa_node_id();
 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+#ifdef LL_RX_FLOW_DIR_SET
+	int f;
+#endif // LL_RX_FLOW_DIR_SET 
 #ifdef IXGBE_FCOE
 	int ddp_bytes = 0;
 #endif /* IXGBE_FCOE */
@@ -1828,7 +1828,6 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int q_vectors, vector, r_idx;
 	bool rx_clean_complete = true;
 	int  exit_stat = INET_LL_RX_FLUSH_OP;
-	int f;
 //	bool non_target_packet_rec = false;
 
 #ifdef LL_MULTI_PORT_QUICKEXIT
@@ -1836,7 +1835,7 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 #else // LL_MULTI_PORT_QUICKEXIT...  cannot be enabled same time as LL_LOOP_QUICKEXIT
 #ifdef LL_LOOP_QUICKEXIT
 	int ll_loop_count=0;
-#endif	
+#endif // LL_LOOP_QUICKEXIT
 #endif // LL_MULTI_PORT_QUICKEXIT
 	unsigned short dest_port;
 
@@ -1893,7 +1892,7 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	
 	r_idx = find_first_bit(q_vector->rxr_idx, adapter->num_rx_queues);
 
-#if defined(CONFIG_DCA) || defined(CONFIG_DCA_MODULE)
+
 
 	for (i = 0; i < q_vector->rxr_count; i++)
 	{
@@ -1928,14 +1927,14 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 		q_vector->ll_hit = 0;
 		q_vector->ll_miss = 0;
 	}
-#endif // LL_FLOW_CHANGE
+#endif // LL_CHECK_MATCH
 
 	if ( i == q_vector->rxr_count ) // smp Processor not associated with queue
 	{
 
 #ifdef LL_FLOW_CHANGE
 		// Check my Queue for very recent Flow Change
-		
+
 		if ( smp_processor_id() < adapter->num_rx_queues )
 		{
 			// Change Q's
@@ -1958,10 +1957,9 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 				{
 #ifdef 	LL_CHECK_MATCH
 					q_vector->smp_miss++;
-#endif // LL_FLOW_CHANGE
+#endif // LL_CHECK_MATCH
 
 #ifdef LL_RX_FLOW_DIR_SET
-
 					// look for info about packet from the queue packet received on
 					for ( f = 0; f < LL_FDIR_CNT; f++ )
 					{
@@ -2023,7 +2021,7 @@ Q_CHANGE:
 						q_vector->ll_hit = 0;
 						q_vector->ll_miss = 0;
 					}
-#endif // LL_FLOW_CHANGE
+#endif // LL_CHECK_MATCH
 					
 #ifdef LL_FLOW_CHANGE_DEBUG	
 					printk("LL RX to smp %i\n", smp_processor_id());
@@ -2038,7 +2036,7 @@ Q_CHANGE:
 
 #ifdef 	LL_CHECK_MATCH
 		q_vector->smp_miss++;
-#endif // LL_FLOW_CHANGE
+#endif // LL_CHECK_MATCH
 NEW_FLOW:
 		return( INET_LL_RX_FLUSH_NO_SMP_MATCH );   // indicate not owned by current CPU
 	}
@@ -2048,8 +2046,8 @@ USE_MY_Q:
 
 #ifdef 	LL_CHECK_MATCH
 	q_vector->smp_match++;
-#endif
-#endif
+#endif  // LL_CHECK_MATCH
+
 
 	// If last operation on Queue for POLL flush and current POLL flush exit
 
@@ -2091,7 +2089,7 @@ TRY_AGAIN:
 	}
 	
 	// Disable interrupts for this Q only
-#ifdef LL_DISABLE_IQR
+#ifdef LL_DISABLE_IRQ
 	/*
 	 * When in low-latency mode interrupts continue at a very high
 	 * rate and cause latency issues and decreased throughput.
@@ -2099,7 +2097,7 @@ TRY_AGAIN:
 	 * once the flush is complete increases TPS and reduces latency.
 	 */
 	ixgbe_irq_disable_queues(adapter, ((u64)1 << q_vector->v_idx));
-#endif  // LL_DISABLE_IQR
+#endif  // LL_DISABLE_IRQ
 
 	// Check for interrupt since clear of flag 
 	if ( test_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags ) != 0 ) {
@@ -2461,16 +2459,16 @@ for ( ; ; ) {
 
 #ifdef 	LL_CHECK_MATCH
 				q_vector->ll_hit++;
-#endif				
+#endif	// LL_CHECK_MATCH		
 
 #ifdef LOW_LAT_REC_DEBUG   
 				printk( "IXGBE: Found UDP\n" );
-#endif
+#endif // LOW_LAT_REC_DEBUG
 			}
 #ifdef 	LL_CHECK_MATCH
 			else 
 				q_vector->ll_miss++;
-#endif			
+#endif	// LL_CHECK_MATCH	
 		}
 		else if ( iph->protocol == IPPROTO_TCP ) 
 		{
@@ -2495,16 +2493,16 @@ for ( ; ; ) {
 
 #ifdef 	LL_CHECK_MATCH
 				q_vector->ll_hit++;
-#endif				
+#endif	// LL_CHECK_MATCH		
 
 #ifdef LOW_LAT_REC_DEBUG   
-				printk( "IXGBE: Found UDP\n" );
-#endif
+				printk( "IXGBE: Found TCP\n" );
+#endif // LOW_LAT_REC_DEBUG
 			}
 #ifdef 	LL_CHECK_MATCH
 			else 
 				q_vector->ll_miss++;
-#endif			
+#endif	// LL_CHECK_MATCH	
 		}
 		else
 		{
@@ -2589,7 +2587,7 @@ NOT_TARG_PACK:
 #ifdef LL_RX_QUEUE // Put in Queue for now
 
 
-		__skb_queue_tail(&q_vector->ll_rx_skb_q, skb ); // Juat stick on queue
+		__skb_queue_tail(&q_vector->ll_rx_skb_q, skb ); // Just stick on queue
 
 #ifdef 	LL_PROC_TIME_INFO
 		ll_in_prc_fin = get_cycles();
@@ -2720,10 +2718,14 @@ next_desc:
 
 			skb = __skb_dequeue(&q_vector->ll_rx_skb_q);
 			
+#ifdef LL_USE_NET_RECV_SKB
+			netif_receive_skb( skb );
+#else  // LL_USE_NET_RECV_SKB
 			if ( q_vector->ll_rx_skb_q.qlen ) // Not last buf?
 				netif_rx(skb);  // input to network with no SWISR
 			else
 				netif_rx_ni(skb);  // Last one runs SWISR
+#endif  // LL_USE_NET_RECV_SKB
 			
 #ifdef 	LL_PROC_TIME_INFO
 			q_vector->ll_skb_count++;
@@ -2733,7 +2735,7 @@ next_desc:
 		continue;  // go back to receiving buffers
 	}
 	
-#endif // LL_RX_QUEUE
+#endif // LL_USE_NET_RECV_SKB
 							
 /********** Don't have target RX buffer, try clearing a TX buffer ************/		
 
@@ -2908,11 +2910,15 @@ if ( pack_recv ) // Only Do Exit Processing if a packet was Received
 #endif // LL_PROC_TIME_INFO
 
 		skb = __skb_dequeue(&q_vector->ll_rx_skb_q);
-			
+
+#ifdef LL_USE_NET_RECV_SKB
+			netif_receive_skb( skb );
+#else  // LL_USE_NET_RECV_SKB
 		if ( q_vector->ll_rx_skb_q.qlen ) // Not last buf?
 			netif_rx(skb);  // input to network with no SWISR
 		else
 			netif_rx_ni(skb);  // Last one runs SWISR
+#endif  // LL_USE_NET_RECV_SKB
 			
 #ifdef 	LL_PROC_TIME_INFO
 		q_vector->ll_skb_count++;
@@ -2979,10 +2985,6 @@ else  // "if ( pack_recv )"
 #ifdef LL_EXTENDED_STATS
 	tx_inf_ring->stats.rx_targ_pkt_tx_flush_no_data++;
 #endif  // LL_EXTENDED_STATS
-
-#if 0
-	printk( "IXGBE: Timeout\n" );
-#endif
 }
 
 /************************** Adjust Interrupt Rate ****************************/
@@ -3091,7 +3093,7 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 #endif  // LL_ENTER_PEND_SWISR
 	{
 	
-#ifdef LL_DISABLE_IQR
+#ifdef LL_DISABLE_IRQ
 		/*
 		 * If interrupts are disabled a check is performed
 		 * to determine if the flush is complete. If so
@@ -3101,14 +3103,13 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 		 */
 		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
 			u64 eics = ((u64)1 << q_vector->v_idx);
-			if (!found_data)
-				ixgbe_irq_enable_queues(adapter, eics);
+			ixgbe_irq_enable_queues(adapter, eics);
 			if ((!rx_clean_complete) || (pack_recv == 0) ||
-			    (test_bit(IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
+	            ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
 				ixgbe_irq_rearm_queues(adapter, eics);
 		}
-#else
- #if 0 // losses interrupts
+#else //LL_DISABLE_IRQ
+#if 0 // losses interrupts
 		if ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ) {
 			if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
 				u64 eics = ((u64)1 << q_vector->v_idx);
@@ -3147,7 +3148,7 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 		}
 #endif			
 
-#endif // LL_DISABLE_IQR
+#endif // LL_DISABLE_IRQ
 	}
 	
 EXIT:

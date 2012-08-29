@@ -184,6 +184,10 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned flags,
 		 * However, this function was corrent in any case. 8)
 		 */
 		unsigned long cpu_flags;
+		
+#ifdef CONFIG_INET_LL_RX_FLUSH
+NEW_PACKET:
+#endif  // CONFIG_INET_LL_RX_FLUSH
 
 		spin_lock_irqsave(&sk->sk_receive_queue.lock, cpu_flags);
 		skb = skb_peek(&sk->sk_receive_queue);
@@ -239,7 +243,7 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned flags,
 					}	
 
 					low_lat_flush = true;
-					continue;   // try to get next flushed buffer
+					goto NEW_PACKET;   // try to get flushed buffer
 				}
 			}
 		}

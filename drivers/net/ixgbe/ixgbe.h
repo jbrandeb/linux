@@ -57,7 +57,8 @@
 
 #include "ixgbe_api.h"
 
-#define CONFIG_INET_LL_RX_FLUSH  1  // Enable Build even if not config
+//#define CONFIG_INET_LL_RX_FLUSH  1  // Enable Build even if not config
+
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
@@ -92,8 +93,9 @@
 //#define LL_MULTI_PORT_QUICKEXIT  1      // Quick Exit on Multiple Port Queue Operation
 										  //   Note: LL_MULTI_PORT_QUICKEXIT needs LL_DATARATE
 //#define LL_LOOP_QUICKEXIT  1            // Quick Exit after several loops for tx
-//#define LL_DISABLE_IQR   1              // Disable IQR for Queue during LL Processing
+//#define LL_DISABLE_IRQ   1              // Disable IRQ for Queue during LL Processing
 //#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate 
+//#define LL_USE_NET_RECV_SKB  1          // use the netif_receive_skb() to receive packets
 
 // Information enables
 
