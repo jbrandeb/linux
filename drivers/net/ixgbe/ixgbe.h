@@ -87,6 +87,7 @@
 //#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director 
 //#define LL_DISABLE_IRQ   1                // Disable IRQ for Queue during LL Processing
 #define LL_EXTENDED_STATS  1            // save extended stats for output by ethtool
+//#define LL_FLUSH_EPOLL   1		    // Eventpoll specific flush (for memcached)
 
 // Probably not desirable operation
 

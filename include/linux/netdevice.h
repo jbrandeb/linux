@@ -334,6 +334,9 @@ struct dev_ll_flush {					// device flush
 	u8			flush_type;		// type of flush operation
 #define INET_LL_FLUSH_TYPE_SOCK 0
 #define INET_LL_FLUSH_TYPE_POLL 1
+#define INET_LL_FLUSH_TYPE_EPOLL 2
+#define INET_LL_FLUSH_TYPE_EPOLL_DISABLE_IRQ 3
+
 	bool			try_flush;		// pending flush for empty rx queue
 	u32			dev_skb_id_ref;		// device's private skb ref id
 };

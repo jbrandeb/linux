@@ -242,6 +242,10 @@ extern int	     sock_recvmsg(struct socket *sock, struct msghdr *msg,
 				  size_t size, int flags);
 extern int 	     sock_map_fd(struct socket *sock, int flags);
 extern struct socket *sockfd_lookup(int fd, int *err);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+extern struct socket *sockfile_lookup(struct file *file, int *err);
+extern unsigned int sock_epoll(struct file *file, struct poll_table_struct *wait, u8 flush_type);
+#endif
 #define		     sockfd_put(sock) fput(sock->file)
 extern int	     net_ratelimit(void);
 

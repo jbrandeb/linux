@@ -1895,6 +1895,20 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 
 	preempt_disable();
 	ixgbe_irq_disable_queues(adapter, ((u64)1 << q_vector->v_idx));
+#ifdef LL_FLUSH_EPOLL
+	if (flush->flush_type == INET_LL_FLUSH_TYPE_EPOLL_DISABLE_IRQ) {
+		preempt_enable();
+
+		clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); 
+		q_vector->ll_eitr_save = q_vector->eitr;
+		q_vector->eitr = IXGBE_MIN_INT_RATE;
+		// Set new interrupt rate for vector
+		ixgbe_write_eitr(q_vector);
+		ixgbe_irq_enable_queues(adapter, ((u64)1 << q_vector->v_idx));
+
+		return (INET_LL_RX_FLUSH_IMM_EXIT);
+	}
+#endif
 
     // Make sure ring is owned by current processor 
 	

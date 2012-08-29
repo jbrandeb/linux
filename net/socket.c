@@ -444,6 +444,25 @@ struct socket *sockfd_lookup(int fd, int *err)
 }
 EXPORT_SYMBOL(sockfd_lookup);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+struct socket *sockfile_lookup(struct file *file, int *err)
+{
+	struct socket *sock = NULL;
+	if (!file) {
+		*err = -EBADF;
+		return NULL;
+	}
+
+	if (file->f_op == &socket_file_ops)
+		sock = file->private_data;	/* set in sock_map_fd */
+	else
+		*err = -ENOTSOCK;
+
+	return sock;
+}
+EXPORT_SYMBOL(sockfile_lookup);
+#endif /* CONFIG_INET_LL_RX_FLUSH */
+
 static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 {
 	struct file *file;
@@ -1059,16 +1078,13 @@ static unsigned int sock_poll(struct file *file, poll_table *wait)
 	poll_result = sock->ops->poll(file, sock, wait);
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-
 	if (!wait)
 		return poll_result;
 
 	// empty rx queue and no err or shutdown pending	
 	if ( !( poll_result & ( POLLRDNORM | POLLERR | POLLRDHUP | POLLHUP ))) {
-
 		sk = sock->sk;
 		if ( sk && sk->flush.try_flush) {
-
 			// last rx skb from flush driver port?
 			if ( sk->flush.dev_ref && ( sk->last_recv_dev != NULL )) {
 				struct net_device *dev = sk->last_recv_dev;
@@ -1093,6 +1109,47 @@ static unsigned int sock_poll(struct file *file, poll_table *wait)
 
 	return poll_result;
 }
+
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+/* for eventpoll based flows */
+unsigned int sock_epoll(struct file *file, poll_table *wait, u8 flush_type)
+{
+	unsigned int poll_result;
+	struct socket *sock;
+	struct sock *sk;
+
+	sock = file->private_data;
+
+	poll_result = sock->ops->poll(file, sock, wait);
+
+	// empty rx queue and no err or shutdown pending	
+	//if (!( poll_result & ( POLLRDNORM | POLLERR | POLLRDHUP | POLLHUP))) {
+	if (!( poll_result & (POLLERR | POLLRDHUP | POLLHUP))) {
+		sk = sock->sk;
+		if (sk) {
+			// last rx skb from flush driver port?
+			if (sk->flush.dev_ref && (sk->last_recv_dev != NULL)) {
+				struct net_device *dev = sk->last_recv_dev;
+				if (dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush) {
+					sk->flush.flush_type = flush_type;
+					if (dev->netdev_ops->ndo_low_lat_rx_flush(dev, &sk->flush) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#if defined(CONFIG_SMP) && defined(CONFIG_INET_LL_RX_Q_FLOW_CHANGE)
+						sk->flow.flow_change = true;	// poor data flow detected 
+#endif  // CONFIG_INET_LL_RX_Q_FLOW_CHANGE && CONFIG_SMP
+						// redo poll after driver flush, 
+						// NULL to not register wait twice
+						poll_result = sock->ops->poll(file, sock, NULL);
+					}
+				}
+			}
+		}
+	}
+
+	return poll_result;
+}
+EXPORT_SYMBOL(sock_epoll);
+#endif  // CONFIG_INET_LL_RX_FLUSH
 
 static int sock_mmap(struct file *file, struct vm_area_struct *vma)
 {

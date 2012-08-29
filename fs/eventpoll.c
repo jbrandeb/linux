@@ -1113,6 +1113,40 @@ static int ep_send_events(struct eventpoll *ep,
 	return ep_scan_ready_list(ep, ep_send_events_proc, &esed);
 }
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#include <linux/net.h>
+#include <linux/netdevice.h>
+#include <net/sock.h>
+static unsigned int ep_poll_ll_sock(struct eventpoll *ep, long timeout, poll_table *wait, u8 flush_type)
+{
+	struct socket *sock;
+	struct file *file;
+	struct epitem *epi;
+	struct rb_node *rbp;
+	unsigned int poll_result = 0;
+	int    err;
+
+	/* TODO: find out if ep->lock need be acquired for read */
+	for (rbp = rb_first(&ep->rbr); rbp; rbp = rb_next(rbp)) {
+		epi = rb_entry(rbp, struct epitem, rbn);
+		file = epi->ffd.file;
+		/* TODO, find out which best socket to poll
+		   sockfd_lookup(epi->ffd.fd, &err) is causing system boot issue
+		*/
+		sock = sockfile_lookup(file, &err);
+		if (sock == NULL)
+			continue;
+
+		poll_result = sock_epoll(file, wait, flush_type);
+		/* poll only once in an ep_poll() */
+		if (poll_result != 0)
+			break;
+	}
+
+	return poll_result;
+}
+#endif /* CONFIG_INET_LL_RX_FLUSH */
+
 static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 		   int maxevents, long timeout)
 {
@@ -1120,6 +1154,9 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 	unsigned long flags;
 	long jtimeout;
 	wait_queue_t wait;
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	unsigned int poll_result;
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 
 	/*
 	 * Calculate the timeout by checking for the "infinite" value (-1)
@@ -1128,6 +1165,13 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 	 */
 	jtimeout = (timeout < 0 || timeout >= EP_MAX_MSTIMEO) ?
 		MAX_SCHEDULE_TIMEOUT : (timeout * HZ + 999) / 1000;
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	if (!(list_empty(&ep->rdllist)))
+		poll_result = ep_poll_ll_sock(ep, jtimeout, NULL, INET_LL_FLUSH_TYPE_EPOLL_DISABLE_IRQ);
+	else
+		poll_result = ep_poll_ll_sock(ep, jtimeout, NULL, INET_LL_FLUSH_TYPE_EPOLL);
+#endif /* CONFIG_INET_LL_RX_FLUSH */
 
 retry:
 	spin_lock_irqsave(&ep->lock, flags);
