@@ -413,6 +413,10 @@ struct ixgbe_q_vector {
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
+	unsigned int last_flush_type;	// last flush operation type
+	
+#define IXGBE_DATA_SINCE_FLUSH   128  // to invalidate last_flush_type
+
 #ifdef LL_RX_QUEUE
 	struct sk_buff_head ll_rx_skb_q;   // rx input list queue
 #endif // LL_RX_QUEUE

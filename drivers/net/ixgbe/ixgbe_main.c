@@ -1711,6 +1711,8 @@ next_desc:
 		cycles_t rx_time = get_cycles(); 
 		
 		q_vector->last_irq_time = rx_time;  
+
+		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; // Clear flush type
 		
 /*************** calculate data rate for high rate flush exit ****************/
 		
@@ -2050,6 +2052,14 @@ USE_MY_Q:
 	q_vector->smp_match++;
 #endif
 #endif
+
+	// If last operation on Queue for POLL flush and current POLL flush exit
+
+	if (( q_vector->last_flush_type == INET_LL_FLUSH_TYPE_POLL ) &&
+		( flush->flush_type == INET_LL_FLUSH_TYPE_POLL ))
+		return( INET_LL_RX_FLUSH_IMM_EXIT );
+		
+	q_vector->last_flush_type = flush->flush_type;
 
 #ifndef LL_ENTER_PEND_SWISR
 	// Check for currently processing input data (NAPI in progress)
@@ -2951,18 +2961,8 @@ if ( pack_recv ) // Only Do Exit Processing if a packet was Received
 	q_vector->cyc_per_packet = (u32) cyc_per_packet;
 	q_vector->last_rx_time = rx_time;
 #endif // 	LL_HIGH_PACK_RATE_EXIT
-
-#ifdef CONFIG_IXGBE_NAPI
-#if 0
-	if ( non_target_packet_rec )
-	{
-		if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ) != 0 )
-		{
-			napi_gro_flush(&q_vector->napi);  // Flush data added to napi queue
-		}
-	}
-#endif
-#endif // CONFIG_IXGBE_NAPI
+		
+	q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; // Clear flush type
 
 //	ll_rx_end_time = (unsigned int) get_cycles(); // MAP Timing Test
 }
