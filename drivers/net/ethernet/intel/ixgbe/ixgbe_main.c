@@ -6629,6 +6629,47 @@ dma_error:
 	tx_ring->next_to_use = i;
 }
 
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+static u16 ixgbe_queue_id_for_cpu_id(struct net_device *dev,
+				     u16 cpu_id, u16 default_id)
+{
+	u16 q;
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+
+	/* very ugly cpu to q relationship algorithms ... */
+
+	/* do target idea of rx queue per cpu assumption  */
+	if (adapter->num_rx_queues == num_online_cpus())
+		return cpu_id; /* each cpu has own queue */
+
+	if (adapter->num_rx_queues == 1)
+		return 0; /* only 1 queue for all cpus */
+
+	q = cpu_id;
+
+	/* assuming number of tx queues always == number of rx queues */
+
+	if (adapter->flags & IXGBE_FLAG_FDIR_HASH_CAPABLE) {
+		while (unlikely(q >= dev->real_num_tx_queues))
+			q -= dev->real_num_tx_queues;
+		return q;
+	}
+
+	/* search RX queues for smp cpu id match */
+	if (cpu_id < adapter->num_rx_queues) {
+		struct ixgbe_q_vector *q_vector = adapter->q_vector[cpu_id];
+		struct ixgbe_ring *rx_ring;
+
+		ixgbe_for_each_ring(rx_ring, q_vector->rx) {
+			if (rx_ring->queue_index == cpu_id)  /* match processor? */
+				return cpu_id;
+		}
+	}
+
+	return default_id;
+}
+
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 static void ixgbe_atr(struct ixgbe_ring *ring,
 		      struct ixgbe_tx_buffer *first)
 {
@@ -6642,6 +6683,7 @@ static void ixgbe_atr(struct ixgbe_ring *ring,
 	} hdr;
 	struct tcphdr *th;
 	__be16 vlan_id;
+	u8 queue_index;
 
 	/* if ring doesn't have a interrupt vector, cannot perform ATR */
 	if (!q_vector)
@@ -6670,7 +6712,12 @@ static void ixgbe_atr(struct ixgbe_ring *ring,
 		return;
 
 	/* sample on all syn packets or once every atr sample count */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+	if (!first->skb->flow.flow_change && !th->syn &&
+	    (ring->atr_count < ring->atr_sample_rate))
+#else
 	if (!th->syn && (ring->atr_count < ring->atr_sample_rate))
+#endif
 		return;
 
 	/* reset sample count */
@@ -6712,9 +6759,25 @@ static void ixgbe_atr(struct ixgbe_ring *ring,
 			     hdr.ipv6->daddr.s6_addr32[3];
 	}
 
+	queue_index = ring->queue_index;
+
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+	/* find rx queue for process cpu */
+	if (first->skb->flow.valid_rx) /* valid socket receive cpu id */
+		queue_index = ixgbe_queue_id_for_cpu_id(ring->netdev,
+							first->skb->flow.rx_cpu,
+							queue_index);
+	else if (first->skb->flow.valid_tx) /* valid socket tx cpu id */
+		queue_index = ixgbe_queue_id_for_cpu_id(ring->netdev,
+							first->skb->flow.tx_cpu,
+							queue_index);
+
+	first->skb->flow.flow_change = false;
+
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 	/* This assumes the Rx queue and Tx queue are bound to the same CPU */
 	ixgbe_fdir_add_signature_filter_82599(&q_vector->adapter->hw,
-					      input, common, ring->queue_index);
+					      input, common, queue_index);
 }
 
 static int __ixgbe_maybe_stop_tx(struct ixgbe_ring *tx_ring, u16 size)
