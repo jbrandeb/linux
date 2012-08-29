@@ -1901,6 +1901,11 @@ static int ixgbe_low_latency_recv(struct net_device *netdev,
 	int q_vectors, vector;
 	bool rx_clean_complete = true;
 	int  exit_stat = INET_LL_RX_FLUSH_OP;
+#ifdef LL_RX_FLUSH_TX
+	struct ixgbe_ring *tx_ring = NULL;
+	u16 tx_i;
+	union ixgbe_adv_tx_desc *eop_desc;
+#endif
 
 	ll_rx_start_time = get_cycles();
 
@@ -2082,6 +2087,121 @@ poll_start:
 		goto RX_DONE; /* Exit Loop */
 
 /*********** Didn't Exit, put any queued bufs in network stack ***************/
+
+
+/********** Don't have target RX buffer, try clearing a TX buffer ************/
+
+#ifdef LL_RX_FLUSH_TX
+	if (!tx_ring) {
+		if (!q_vector->tx.ring)
+			goto poll_start;
+		tx_ring = q_vector->tx.ring;
+	}
+
+	tx_i = tx_ring->next_to_clean;
+	eop_desc = tx_ring->tx_buffer_info[tx_i].next_to_watch;
+
+	/* Only do 1 TX buffer */
+	if (eop_desc &&
+	    (eop_desc->wb.status & cpu_to_le32(IXGBE_TXD_STAT_DD))) {
+		unsigned int tx_total_bytes = 0, tx_total_packets = 0;
+		struct ixgbe_tx_buffer *tx_buffer;
+		union ixgbe_adv_tx_desc *tx_desc;
+
+		tx_buffer = &tx_ring->tx_buffer_info[tx_i];
+		tx_desc = IXGBE_TX_DESC(tx_ring, tx_i);
+		tx_i -= tx_ring->count;
+
+		/* clear next_to_watch to prevent false hangs */
+		tx_buffer->next_to_watch = NULL;
+
+		/* update the statistics for this packet */
+		tx_total_bytes += tx_buffer->bytecount;
+		tx_total_packets += tx_buffer->gso_segs;
+
+#ifdef CONFIG_IXGBE_PTP
+		if (unlikely(tx_buffer->tx_flags &
+			     IXGBE_TX_FLAGS_TSTAMP))
+			ixgbe_ptp_tx_hwtstamp(q_vector,
+					      tx_buffer->skb);
+
+#endif
+		/* free the skb */
+		dev_kfree_skb_any(tx_buffer->skb);
+
+		/* unmap skb header data */
+		dma_unmap_single(tx_ring->dev,
+				 dma_unmap_addr(tx_buffer, dma),
+				 dma_unmap_len(tx_buffer, len),
+				 DMA_TO_DEVICE);
+
+		/* clear tx_buffer data */
+		tx_buffer->skb = NULL;
+		dma_unmap_len_set(tx_buffer, len, 0);
+
+		/* unmap remaining buffers */
+		while (tx_desc != eop_desc) {
+			tx_buffer++;
+			tx_desc++;
+			tx_i++;
+			if (unlikely(!tx_i)) {
+				tx_i -= tx_ring->count;
+				tx_buffer = tx_ring->tx_buffer_info;
+				tx_desc = IXGBE_TX_DESC(tx_ring, 0);
+			}
+
+			/* unmap any remaining paged data */
+			if (dma_unmap_len(tx_buffer, len)) {
+				dma_unmap_page(tx_ring->dev,
+					       dma_unmap_addr(tx_buffer, dma),
+					       dma_unmap_len(tx_buffer, len),
+					       DMA_TO_DEVICE);
+				dma_unmap_len_set(tx_buffer, len, 0);
+			}
+		}
+
+		/* move us one more past the eop_desc for start of next pkt */
+		tx_buffer++;
+		tx_desc++;
+		tx_i++;
+		if (unlikely(!tx_i)) {
+			tx_i -= tx_ring->count;
+			tx_buffer = tx_ring->tx_buffer_info;
+			tx_desc = IXGBE_TX_DESC(tx_ring, 0);
+		}
+
+		tx_i += tx_ring->count;
+		tx_ring->next_to_clean = tx_i;
+		u64_stats_update_begin(&tx_ring->syncp);
+		tx_ring->stats.bytes += tx_total_bytes;
+		tx_ring->stats.packets += tx_total_packets;
+		u64_stats_update_end(&tx_ring->syncp);
+		q_vector->tx.total_bytes += tx_total_bytes;
+		q_vector->tx.total_packets += tx_total_packets;
+
+		netdev_tx_completed_queue(txring_txq(tx_ring),
+					  tx_total_packets, tx_total_bytes);
+
+#define TX_WAKE_THRESHOLD (DESC_NEEDED * 2)
+		if (unlikely(tx_total_packets && netif_carrier_ok(tx_ring->netdev) &&
+			     (ixgbe_desc_unused(tx_ring) >= TX_WAKE_THRESHOLD))) {
+			/* Make sure that anybody stopping the queue after this
+			 * sees the new next_to_clean.
+			 */
+			smp_mb();
+			if (__netif_subqueue_stopped(tx_ring->netdev,
+						     tx_ring->queue_index)
+			    && !test_bit(__IXGBE_DOWN, &adapter->state)) {
+				netif_wake_subqueue(tx_ring->netdev,
+						    tx_ring->queue_index);
+				++tx_ring->tx_stats.restart_queue;
+			}
+		}
+	} else {
+		tx_ring = tx_ring->next;
+	}
+
+#endif /* LL_RX_FLUSH_TX */
 
 	goto poll_start;
 

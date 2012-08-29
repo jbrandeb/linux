@@ -69,6 +69,10 @@
 #define LL_LOOP_COUNT_MAX                       4  /* Maximum times through LL loop for quickexit */
 #define LOW_LATENCY_MAX_RATE_TIME           20000  /* Ave Rate Time per packet for wait */
 
+/* Probably desirable operation */
+
+#define LL_RX_FLUSH_TX  1               /* Include TX Buff Removal in Low Latency RX Proc */
+
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 /* common prefix used by pr_<> macros */
 #undef pr_fmt
