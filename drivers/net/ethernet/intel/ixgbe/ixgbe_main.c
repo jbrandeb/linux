@@ -1614,8 +1614,12 @@ static void ixgbe_reuse_rx_page(struct ixgbe_ring *rx_ring,
 					 new_buff->page_offset, bufsz,
 					 DMA_FROM_DEVICE);
 
-	/* bump ref count on page before it is given to the stack */
-	get_page(new_buff->page);
+	/*
+	 * since we are the only owner of the page and we need to
+	 * increment it, just set the value to 2 in order to avoid
+	 * an unecessary locked operation
+	 */
+	atomic_set(&new_buff->page->_count, 2);
 }
 
 /**
