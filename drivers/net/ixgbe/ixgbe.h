@@ -80,11 +80,12 @@
 
 #define LL_RX_FLUSH_TX  1               // Include TX Buff Removal in Low Latency RX Proc
 #define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   // Include IRQ Rate increase for no Data
-#define LL_FLOW_CHANGE  1            // Output TX Flow Change Tag
-#define LL_RX_QUEUE  1                  // Use RX Queue
-#define LL_EXIT_ON_RX_NON_TARGET  1     // Exit for receive of non-target data
-#define LL_ENTER_PEND_SWISR  1          // Enter LL even though Pending SWISR
-#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director 
+// yadong disable following five defines to simplify.
+//#define LL_FLOW_CHANGE  1            // Output TX Flow Change Tag
+//#define LL_RX_QUEUE  1                  // Use RX Queue
+//#define LL_EXIT_ON_RX_NON_TARGET  1     // Exit for receive of non-target data
+//#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director 
+//#define LL_DISABLE_IRQ   1                // Disable IRQ for Queue during LL Processing
 #define LL_EXTENDED_STATS  1            // save extended stats for output by ethtool
 
 // Probably not desirable operation
@@ -93,7 +94,6 @@
 //#define LL_MULTI_PORT_QUICKEXIT  1      // Quick Exit on Multiple Port Queue Operation
 										  //   Note: LL_MULTI_PORT_QUICKEXIT needs LL_DATARATE
 //#define LL_LOOP_QUICKEXIT  1            // Quick Exit after several loops for tx
-#define LL_DISABLE_IRQ   1              // Disable IRQ for Queue during LL Processing
 //#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate 
 //#define LL_USE_NET_RECV_SKB  1          // use the netif_receive_skb() to receive packets
 
@@ -497,8 +497,8 @@ struct ixgbe_q_vector {
 
 
 #ifdef LL_RX_FLOW_DIR_SET
-#define LL_FDIR_CNT			8	
-#define LL_FDIR_MASK		0x07	// matches	LL_FDIR_CNT
+#define LL_FDIR_CNT			32	
+#define LL_FDIR_MASK		0x1F	// matches	LL_FDIR_CNT
 	
 	int ll_cur_rx_fdir_info_id;			// current FDIR array values
 
