@@ -215,6 +215,16 @@ NEW_PACKET:
 			sk->flush.dev_ref = skb->dev_ref;  /* !NULL if dev does low latency ops */
 			sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
 			sk->flush.input_port = udp_hdr(skb)->dest;  /* save rx port for dev */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+			{
+				u8 smp = (u8) smp_processor_id();
+				if (smp != sk->flow.rx_cpu) { /* rx cpu change? */
+					sk->flow.rx_cpu = smp;
+					sk->flow.flow_change = true; /* data flow change detected */
+				}
+				skb->flow.valid_rx = true;
+			}
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 #endif /* CONFIG_INET_LL_RX_FLUSH */
 			return skb;
 		}
@@ -228,7 +238,12 @@ NEW_PACKET:
 
 				if (dev->netdev_ops && dev->netdev_ops->ndo_low_lat_rx_flush) {
 					sk->flush.flush_type = INET_LL_FLUSH_TYPE_SOCK;
-					dev->netdev_ops->ndo_low_lat_rx_flush(dev, &sk->flush);
+					if (dev->netdev_ops->ndo_low_lat_rx_flush(dev,
+						&sk->flush) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+						sk->flow.flow_change = true; /* poor data flow detected */
+#endif
+					}
 
 					low_lat_flush = true;
 					goto NEW_PACKET; /* try to get flushed buffer */

@@ -419,6 +419,20 @@ config INET_LL_TCP_RX_FLUSH
 
 	  If unsure, say N.
 
+config INET_LL_RX_Q_FLOW_CHANGE
+	bool "Low Latency TX Flow Change"
+	depends on INET_LL_RX_FLUSH
+	depends on SMP
+	default n
+	---help---
+	  Supports Low Latency Net Receive Queue Flow Change. Tags a new socket IP
+	  data flow for the network or data flow that the receive IP processing or
+	  other processing indicates that the flow is not optimal. The flow change
+	  information and rx cpu core is passed through the inet tx stack by skb to
+	  the inet device driver.
+
+	  If unsure, say N.
+
 config INET_DIAG
 	tristate "INET: socket monitoring interface"
 	default y

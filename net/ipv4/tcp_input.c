@@ -4790,6 +4790,16 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 				sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
 				sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
 				sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+		{
+			u8 smp = (u8) smp_processor_id();
+			if (smp != sk->flow.rx_cpu) { /* rx cpu change? */
+				sk->flow.rx_cpu = smp;
+				sk->flow.flow_change = true; /* data flow change detected */
+			}
+			sk->flow.valid_rx = true;
+		}
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 #endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 			}
 			local_bh_disable();
@@ -5364,6 +5374,16 @@ static int tcp_copy_to_iovec(struct sock *sk, struct sk_buff *skb, int hlen)
 		sk->flush.dev_ref = skb->dev_ref; /* !NULL if dev does low latency ops */
 		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
 		sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+		{
+			u8 smp = (u8) smp_processor_id();
+			if (smp != sk->flow.rx_cpu) { /* rx cpu change? */
+				sk->flow.rx_cpu = smp;
+				sk->flow.flow_change = true; /* data flow change detected */
+			}
+			sk->flow.valid_rx = true;
+		}
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 #endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 	}
 
@@ -5432,6 +5452,16 @@ static bool tcp_dma_try_early_copy(struct sock *sk, struct sk_buff *skb,
 		sk->flush.dev_skb_id_ref = skb->dev_skb_id_ref;
 		sk->flush.input_port = tcp_hdr(skb)->dest; /* save rx port for dev */
 
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+		{
+			u8 smp = (u8) smp_processor_id();
+			if (smp != sk->flow.rx_cpu) { /* rx cpu change? */
+				sk->flow.rx_cpu = smp;
+				sk->flow.flow_change = true; /* data flow change detected */
+			}
+			sk->flow.valid_rx = true;
+		}
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 #endif /* CONFIG_INET_LL_TCP_RX_FLUSH */
 		if ((tp->ucopy.len == 0) ||
 		    (tcp_flag_word(tcp_hdr(skb)) & TCP_FLAG_PSH) ||

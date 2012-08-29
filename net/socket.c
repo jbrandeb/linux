@@ -1128,6 +1128,9 @@ static unsigned int sock_poll(struct file *file, poll_table *wait)
 					sk->flush.flush_type = INET_LL_FLUSH_TYPE_POLL;
 					if (dev->netdev_ops->ndo_low_lat_rx_flush(dev,
 							&sk->flush) == INET_LL_RX_FLUSH_NO_SMP_MATCH) {
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+						sk->flow.flow_change = true; /* poor data flow detected */
+#endif
 						/* redo poll after driver flush,
 						 * NULL to not register wait twice
 						 */

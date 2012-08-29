@@ -666,6 +666,9 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 	new->recv_dev		= NULL;
 	new->dev_skb_id_ref	= 0;
 #endif /* CONFIG_INET_LL_RX_FLUSH */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+	new->flow		= old->flow;
+#endif
 }
 
 /*

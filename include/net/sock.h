@@ -380,6 +380,9 @@ struct sock {
 	struct net_device	*last_recv_dev;	/* net device of last buffer */
 	struct dev_ll_flush	flush;		/* driver flush support */
 #endif /* CONFIG_INET_LL_RX_FLUSH */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+	struct sk_dev_flow	flow;
+#endif
 };
 
 /*

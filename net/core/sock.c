@@ -2131,6 +2131,12 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 	sk->last_recv_dev = NULL;
 	memset(&sk->flush, 0, sizeof(sk->flush));
 #endif /* CONFIG_INET_LL_RX_FLUSH */
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+
+	sk->flow.flow_change = true;	/* new socket is always a flow change */
+	sk->flow.valid_rx = false;	/* rx cpu unknown */
+	sk->flow.valid_tx = false;	/* tx cpu unknown */
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 }
 EXPORT_SYMBOL(sock_init_data);
 

@@ -322,6 +322,18 @@ typedef unsigned char *sk_buff_data_t;
 #define NET_SKBUFF_NF_DEFRAG_NEEDED 1
 #endif
 
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+struct sk_dev_flow {
+
+	u8 rx_cpu;		/* last sock rx process cpu */
+	u8 tx_cpu;		/* last sock tx process cpu */
+
+	u8 flow_change;		/* inet cpu flow change detected */
+	u8 valid_rx:1;		/* valid rx cpu core */
+	u8 valid_tx:1;		/* valid tx cpu core */
+};
+
+#endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
 /** 
  *	struct sk_buff - socket buffer
  *	@next: Next buffer in list
@@ -400,6 +412,10 @@ struct sk_buff {
 	u32			dev_skb_id_ref;	/* device's private skb ref id */
 	struct net_device	*recv_dev;	/* buf's privet net receive device */
 #endif /* CONFIG_INET_LL_RX_FLUSH */
+
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+	struct sk_dev_flow	flow;		/* smp socket flow data	*/
+#endif
 
 	/*
 	 * This is the control buffer. It is free to use for every
