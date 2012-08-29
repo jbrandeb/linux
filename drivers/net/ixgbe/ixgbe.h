@@ -57,12 +57,52 @@
 
 #include "ixgbe_api.h"
 
+#define CONFIG_INET_LL_RX_FLUSH  1  // Enable Build even if not config
+
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#define LOW_LATENCY_UDP_TCP_TX  1       // Include TX Buff Removal in Low Latency RX Proc
+
+// Tuning
+
+#define LOW_LATENCY_RX_INPUT_RACE	         1500  // Previous Input SWISR Input Time
+#define LOW_LATENCY_RX_SINCE_START_TIME	     2000  // RX Reeived After Start
+#define LOW_LATENCY_WAIT_TIME			   150000  // Default Low Latency wait delay
+#define LOW_LATENCY_WAIT_TIME_MIN		      250  // Minimum Low Latency wait delay
+#define LOW_LATENCY_WAIT_TIME_MAX	      5000000  // Maximum Low Latency wait delay
+#define LOW_LATENCY_RX_EXIT_COUNT              16  // Exit for number of mismatches
+#define LOW_LATENCY_RX_EXIT_MAX                64  // Allway sExit when number of buffers rx
+#define LL_MULTI_PORT_MAX_DATA_RATE        160000  // Maximum Queue data rate for multiport operation
+#define LL_MULTI_PORT_MIN_DATA_RATE         40000  // Minimum Queue data rate for multiport operation
+#define LL_LOOP_COUNT_MAX                       4  // Maximum times through LL loop for quickexit
+#define LOW_LATENCY_MAX_RATE_TIME           20000  // Ave Rate Time per packet for wait  
+
+// Probably desirable operation
+
+#define LL_RX_FLUSH_TX  1               // Include TX Buff Removal in Low Latency RX Proc
 #define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   // Include IRQ Rate increase for no Data
-#define LL_TX_FLOW_CHANGE  1            // Output TX Flow Change Tag
-//#define LL_TX_FLOW_CHANGE_DEBUG  1      // Output TX Flow Change Debug
-//#define LL_CHECK_MATCH  1				// Output LL Call, SMP, and Packet hit information 
+#define LL_FLOW_CHANGE  1            // Output TX Flow Change Tag
+#define LL_RX_QUEUE  1                  // Use RX Queue
+#define LL_EXIT_ON_RX_NON_TARGET  1     // Exit for receive of non-target data
+#define LL_ENTER_PEND_SWISR  1          // Enter LL even though Pending SWISR
+#define LL_RX_FLOW_DIR_SET	1			// RX sets flow director 
+#define LL_EXTENDED_STATS  1            // save extended stats for output by ethtool
+
+// Probably not desirable operation
+
+//#define LL_DATARATE  i                  // Calculate Running Data Rate
+//#define LL_MULTI_PORT_QUICKEXIT  1      // Quick Exit on Multiple Port Queue Operation
+										  //   Note: LL_MULTI_PORT_QUICKEXIT needs LL_DATARATE
+//#define LL_LOOP_QUICKEXIT  1            // Quick Exit after several loops for tx
+//#define LL_DISABLE_IQR   1              // Disable IQR for Queue during LL Processing
+//#define LL_HIGH_PACK_RATE_EXIT  1       // Exit LL on High Packet Rate 
+
+// Information enables
+
+//#define LL_FLOW_CHANGE_DEBUG  1		  // Output TX Flow Change Debug
+//#define LL_CHECK_MATCH  1				  // Output LL Call, SMP, and Packet hit information 
+//#define LL_PROC_TIME_INFO  1            // Output LL process Time Info
+//#define LL_QUICKEXIT_INFO  1            // Output LL Quick Exit Info
+//#define LL_RX_FLOWDIR_DEBUG 1			// Output info about Flow Direcor change
+
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 
 #define PFX "ixgbe: "
@@ -232,7 +272,15 @@ struct ixgbe_rx_buffer {
 
 struct ixgbe_queue_stats {
 	u64 packets;
-	u64 bytes;
+	u64 bytes;	
+#ifdef LL_EXTENDED_STATS
+	u64 rx_flush_excute_tx_buf_cleared; // rx queue: ll flush execute count
+										// tx queue: ll flush n tx buf cleared by flush
+	u64 rx_targ_pkt_tx_flush_no_data;   // rx queue: ll target pkts flushed
+										// tx queue: ll no pkts received
+	u64 flow_dir;						// rx queue: ii flush did a flow dir programming
+										// tx queue: number of fow dirs from stack
+#endif  // LL_EXTENDED_STATS
 };
 
 #define netdev_ring(adapter, ring) (adapter->netdev)
@@ -314,6 +362,31 @@ struct ixgbe_ring_feature {
                                ? 8 : 1)
 #define MAX_TX_PACKET_BUFFERS MAX_RX_PACKET_BUFFERS
 
+#ifdef LL_MULTI_PORT_QUICKEXIT
+struct ll_port {
+	unsigned short port;		// port being monitored
+	unsigned int   count;		// packet counter
+	unsigned long  time_stamp;	// last move to front
+};
+#endif // LL_MULTI_PORT_QUICKEXIT
+
+#ifdef LL_RX_FLOW_DIR_SET
+struct ll_rx_fdir_info {	// info needed for flow director
+
+	bool	valid_data;
+	
+	u32     dev_skb_id_ref;  // packet id for info
+	
+	u16		dst_port;
+	u16		src_port;
+	u32     src_ipv4_addr;
+	u32		dst_ipv4_addr;
+	
+	u8		l4type;
+	u16		flex_bytes;
+};
+#endif // LL_RX_FLOW_DIR_SET
+
 /* MAX_MSIX_Q_VECTORS of these are allocated,
  * but we only use one per queue-specific vector.
  */
@@ -340,21 +413,32 @@ struct ixgbe_q_vector {
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
+#ifdef LL_RX_QUEUE
+	struct sk_buff_head ll_rx_skb_q;   // rx input list queue
+#endif // LL_RX_QUEUE
+
 	unsigned long ll_rx_flags;
 	
 #define IXGBE_LL_FLAG_RX_INT       1    // RX HW or SW Interrupt Processing since Start
 #define IXGBE_LL_FLAG_RX_OWNER     2    // RX Queue Owner
 #define IXGBE_LL_FLAG_RX_INT_OFF   3    // RX Interrupts are off (NAPI Enabled)
 
+#ifdef LL_RX_FLUSH_TX
+	#define IXGBE_LL_FLAG_TX_OWNER     5    // RX Queue Owner
+#endif // LL_RX_FLUSH_TX
+
+#define IXGBE_LL_FLAG_TX_INT       6    // TX HW or SW Interrupt Processing since Start
 #define IXGBE_LL_FLAG_INT_ABORTED  8    // RX interrupt process was aborted
 
-#ifdef LOW_LATENCY_UDP_TCP_TX
-	#define IXGBE_LL_FLAG_TX_INT       6    // TX HW or SW Interrupt Processing since Start
-	#define IXGBE_LL_FLAG_TX_OWNER     5    // RX Queue Owner
-#endif /* LOW_LATENCY_UDP_TCP_TX */
-
-	cycles_t  last_rx_time;
+	cycles_t  last_irq_time;
 	
+#ifdef LL_HIGH_PACK_RATE_EXIT
+	cycles_t  last_rx_time;
+	u32       cyc_per_packet;
+#endif // 	LL_HIGH_PACK_RATE_EXIT
+	
+#define LL_RX_CYC_PER_PACK_TIME_MAX   3000000    // Max Packet record time 
+                                                 //   (approx 1 ms)
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
 
 	bool   ll_irq_set_low;       // The Irq has been set low
@@ -367,13 +451,59 @@ struct ixgbe_q_vector {
 	unsigned int smp_match, smp_miss, smp_count;
 #endif  /* LL_CHECK_MATCH */
 
-#ifdef LL_TX_FLOW_CHANGE
+#ifdef LL_PROC_TIME_INFO
+	unsigned int ll_exec_count, ll_skb_count, ll_no_rx_count;
+	cycles_t ll_entry_time, ll_exit_time, ll_no_rx_loop_cyc;
+	cycles_t ll_rx_in_netif, ll_in_prc_time, ll_fin_prc_time;
+#ifdef LL_RX_FLUSH_TX
+	unsigned int ll_tx_count, ll_no_tx_count;
+	cycles_t ll_tx_prc_cyc, ll_tx_no_prc_cyc;
+#endif // LL_RX_FLUSH_TX
+#endif  /* LL_PROC_TIME_INFO */
 
-	bool tx_change;
+#ifdef LL_FLOW_CHANGE
+	bool flow_change;
+#endif // LL_FLOW_CHANGE
 
-#endif // LL_TX_FLOW_CHANGE
+#ifdef LL_DATARATE // Calculate Running Data Rate
 
-#endif  /* CONFIG_INET_LL_RX_FLUSH */
+	unsigned long ll_datarate_x16;  // 16 times the datarate
+	unsigned long ll_cur_jif;       // Current Jiffy for data being collected
+	unsigned int  ll_jif_count;     // number of packets for this jiffy
+
+#endif // LL_DATARATE
+
+#ifdef LL_MULTI_PORT_QUICKEXIT
+  #define LL_MULTI_PORT_INT_RATE   14286  // maximum interrupt is 70 usecs
+  #define LL_MULTI_PORT_LIST_SIZE    8
+  #define LL_MULTI_PORT_EXPIR_TIME   9  // Number of Jiffies to expire
+	bool ll_multiport_check;        // do multiport check
+	bool ll_multiport_quickexit;    // quick exit out of low latency flush
+	struct ll_port ll_port_list[ LL_MULTI_PORT_LIST_SIZE ];
+	
+	s8    ll_qexit_on_weight;  // Weight of quick exit being on
+#ifdef LL_QUICKEXIT_INFO
+	unsigned int ll_tog_count;      // number of toggles
+#endif // LL_QUICKEXIT_INFO
+#endif // LL_MULTI_PORT_QUICKEXIT
+
+	u32	ll_last_dev_skb_id_ref;	// local dev id of last skb
+
+
+#ifdef LL_RX_FLOW_DIR_SET
+#define LL_FDIR_CNT			8	
+#define LL_FDIR_MASK		0x07	// matches	LL_FDIR_CNT
+	
+	int ll_cur_rx_fdir_info_id;			// current FDIR array values
+
+	struct ll_rx_fdir_info ll_rx_fdir[ LL_FDIR_CNT ];	// info needed for flow director
+
+#endif  // LL_RX_FLOW_DIR_SET
+#ifdef LL_EXTENDED_STATS
+		bool	tx_buf_half;
+#endif  // LL_EXTENDED_STATS
+
+#endif  // CONFIG_INET_LL_RX_FLUSH
 
 } ____cacheline_internodealigned_in_smp;
 
@@ -601,6 +731,9 @@ struct ixgbe_adapter {
 	bool l2switch_enable;
 	struct vf_data_storage *vfinfo;
 	int node;
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	unsigned int ll_wait_time;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 };
 
 enum ixbge_state_t {

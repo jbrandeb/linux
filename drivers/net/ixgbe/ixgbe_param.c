@@ -1237,5 +1237,9 @@ no_fdir_sample:
 			
 		adapter->node = node_param;
 	}
+	
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 }
 

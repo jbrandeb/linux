@@ -69,6 +69,22 @@ static void ixgbe_set_itr_msix(struct ixgbe_q_vector *q_vector);
 
 void ixgbe_write_eitr(struct ixgbe_q_vector *q_vector);
 
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#ifdef LL_MULTI_PORT_QUICKEXIT
+
+void ixgbe_ll_check_port_flow(          // Check port flow for ll quick exit mode
+  struct ixgbe_q_vector *q_vector );	// Queue to check port flow for
+
+#endif  // LL_MULTI_PORT_QUICKEXIT
+#endif	// CONFIG_INET_LL_RX_FLUSH
+
+static u16 ixgbe_queue_id_for_cpu_id( struct net_device *dev,
+										u16 cpu_id, u16 default_id );
+#ifdef LL_RX_FLOW_DIR_SET
+static void ixgbe_atr_rx(struct ixgbe_adapter *adapter,
+	              struct ll_rx_fdir_info *pll_fdir_info, int queue );
+#endif	// LL_RX_FLOW_DIR_SET
+
 /*************************** Added Local Vars ********************************/
 
 char ixgbe_driver_name[] = "ixgbe";
@@ -1278,6 +1294,9 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 	int ddp_bytes = 0;
 #endif /* IXGBE_FCOE */
 	struct net_device *netdev = netdev_ring(adapter, rx_ring);
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	bool ll_flush_op = false;
+#endif	// CONFIG_INET_LL_RX_FLUSH
 
 	i = rx_ring->next_to_clean;
 	rx_desc = IXGBE_RX_DESC_ADV(*rx_ring, i);
@@ -1357,16 +1376,6 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 			skb->data_len += upper_len;
 			skb->truesize += upper_len;
 		}
-		
-#ifdef CONFIG_INET_LL_RX_FLUSH
-//		printk( "IXGBE: Dev %p, q %p ring %p\n", adapter->netdev, 
-//		        q_vector, rx_ring );
-		if ( adapter->num_rx_queues == num_online_cpus() ) // Only in cpu per queue mode
-		{
-			skb->dev_ref = q_vector;	
-			skb->recv_dev = adapter->netdev;
-		}	
-#endif	// CONFIG_INET_LL_RX_FLUSH
 
 		i++;
 		if (i == rx_ring->count)
@@ -1437,7 +1446,7 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		total_rx_packets++;
 
 		skb->protocol = eth_type_trans(skb, netdev);
-
+		
 #ifdef IXGBE_FCOE
 		/* if ddp, not passing to ULD unless for FCP_RSP or error */
 		if (adapter->flags & IXGBE_FLAG_FCOE_ENABLED) {
@@ -1451,6 +1460,181 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 #endif /* IXGBE_FCOE */
 		vlan_tag = ((staterr & IXGBE_RXD_STAT_VP) ?
 		            le16_to_cpu(rx_desc->wb.upper.vlan) : 0);
+
+/***************** tag the packet for ll flush operation **********************/
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+#ifdef LL_DATARATE
+			q_vector->ll_jif_count++;  // packet count for this jiffy
+#endif // LL_DATARATE
+
+//		printk( "IXGBE: Dev %p, q %p ring %p\n", adapter->netdev, 
+//		        q_vector, rx_ring );
+
+		if ( adapter->num_rx_queues == num_online_cpus() ) // Only in cpu per queue mode
+		{
+			struct iphdr *iph;
+			unsigned short dest_port;
+			
+#ifdef LL_RX_FLOW_DIR_SET
+			struct ll_rx_fdir_info *pll_fdir_info;
+			struct ethhdr *eth;
+#endif // LL_RX_FLOW_DIR_SET			
+			
+			ll_flush_op = true;
+			
+			// set info to pass to receive socket
+			skb->dev_ref = q_vector;	
+			q_vector->ll_last_dev_skb_id_ref++;
+			skb->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+			skb->recv_dev = adapter->netdev;
+			
+/*********************** packet specific protocol Info ***********************/	
+		
+			iph = (struct iphdr *) &skb->data[0]; // eth hdr already pulled
+
+#ifdef LL_RX_FLOW_DIR_SET
+
+			q_vector->ll_cur_rx_fdir_info_id = 
+					(q_vector->ll_cur_rx_fdir_info_id + 1) & LL_FDIR_MASK;
+					
+			pll_fdir_info = &q_vector->ll_rx_fdir[q_vector->ll_cur_rx_fdir_info_id];		
+			pll_fdir_info->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+
+			pll_fdir_info->dst_ipv4_addr = iph->daddr;
+			pll_fdir_info->src_ipv4_addr = iph->saddr;
+			
+			eth = (struct ethhdr *)(skb->data - ETH_HLEN);
+			pll_fdir_info->flex_bytes = eth->h_proto;
+			
+#endif // LL_RX_FLOW_DIR_SET			
+
+			if ( iph->protocol == IPPROTO_UDP ) 
+			{
+				struct udphdr *uh = (struct udphdr *)(skb->data+(iph->ihl<<2));
+			
+				dest_port = uh->dest;
+				
+#ifdef LL_RX_FLOW_DIR_SET
+
+				pll_fdir_info->dst_port = dest_port;
+				pll_fdir_info->src_port = uh->source;
+				pll_fdir_info->l4type = IXGBE_ATR_L4TYPE_UDP;
+				pll_fdir_info->valid_data = true;
+#endif // LL_RX_FLOW_DIR_SET			
+//				printk("UDP\n");	
+			}
+			else if ( iph->protocol == IPPROTO_TCP )
+			{
+				struct tcphdr *th = (struct tcphdr *)(skb->data+(iph->ihl<<2));
+				
+				dest_port = th->dest;
+				
+#ifdef LL_RX_FLOW_DIR_SET
+
+				pll_fdir_info->dst_port = dest_port;
+				pll_fdir_info->src_port = th->source;
+				pll_fdir_info->l4type = IXGBE_ATR_L4TYPE_TCP;
+				pll_fdir_info->valid_data = true;
+				
+#endif // LL_RX_FLOW_DIR_SET			
+//				printk("TCP\n");	
+			}
+			else
+			{
+#ifdef LL_RX_FLOW_DIR_SET
+#if 0
+				int m;
+                printk("Pr %u %u", iph->protocol, iph->tot_len );
+			
+				for ( m=0; m<40; m++ )
+					printk( " %2.2x", skb->data[m] );
+				printk( "\n");
+#endif
+				pll_fdir_info->valid_data = false;
+#endif // LL_RX_FLOW_DIR_SET			
+				
+				goto NOT_TARG_PACK; // not UDP or TCP packet
+			}	
+			
+/********************** Count packets and port flows *************************/
+
+#ifdef LL_MULTI_PORT_QUICKEXIT
+
+		if ( q_vector->ll_multiport_check )
+		{					
+			// what about my interface's ip address???		
+		
+			if ( q_vector->ll_port_list[ 0 ].port == dest_port ) // Current port
+				q_vector->ll_port_list[ 0 ].count++;
+			else
+			{
+				int n;
+				unsigned long jif = jiffies; // bring local to minimize smp hit
+	
+				// search for port in current list
+				struct ll_port *port_list = &q_vector->ll_port_list[ 0 ];
+			
+				port_list->time_stamp = jif; // Just assume current was accessed this jiffie
+				port_list++; // start search on next port data
+			
+				for ( n = 1; n < LL_MULTI_PORT_LIST_SIZE; n++, port_list++ )
+				{
+					if ( jif - port_list->time_stamp > LL_MULTI_PORT_EXPIR_TIME )
+					{
+						n = LL_MULTI_PORT_LIST_SIZE;  // Expired, get oldest
+						break;
+					}
+				
+					if ( port_list->port == dest_port )
+						break;
+				}
+			
+				if ( n == LL_MULTI_PORT_LIST_SIZE ) // didn't find, create new
+				{
+					// shift all up 1 place, deleting last in list
+				
+					memmove( &q_vector->ll_port_list[ 1 ], &q_vector->ll_port_list[ 0 ],
+				            ((u8 *)&q_vector->ll_port_list[ LL_MULTI_PORT_LIST_SIZE - 1 ]) - 
+				             ((u8 *)&q_vector->ll_port_list[ 0 ]));
+				           
+					// initialize new port info
+				
+					q_vector->ll_port_list[ 0 ].port = dest_port;
+					q_vector->ll_port_list[ 0 ].count = 1;
+				}
+				else // move port data to front of list
+				{
+					struct ll_port cur_port;
+				
+					// move to front
+					cur_port = *port_list; // save
+				
+					// shift list up old data
+					memmove( &q_vector->ll_port_list[ 1 ], &q_vector->ll_port_list[ 0 ],
+				            ((u8 *)port_list) - ((u8 *)&q_vector->ll_port_list[ 0 ] ));
+				       
+					q_vector->ll_port_list[ 0 ] = cur_port; // data to front
+					q_vector->ll_port_list[ 0 ].count++;
+				}
+				q_vector->ll_port_list[ 0 ].time_stamp = jif; // set move time
+			}
+		}
+
+	
+#endif // LL_MULTI_PORT_QUICKEXIT
+
+/*****************************************************************************/	
+					
+		}
+		
+NOT_TARG_PACK:			
+
+#endif	// CONFIG_INET_LL_RX_FLUSH
+
+/*****************************************************************************/			
+		
 
 #ifndef IXGBE_NO_LRO
 		if (ixgbe_can_lro(adapter, rx_desc))
@@ -1514,13 +1698,40 @@ next_desc:
 		ixgbe_irq_rearm_queues(adapter, ((u64)1 << q_vector->v_idx));
 #endif
 
-#ifdef CONFIG_INET_LL_RX_FLUSH
-	if ( total_rx_packets ) {  // Data reeived
-		q_vector->last_rx_time = get_cycles();  
+/*********************** flush exit processing *****************************/
 
-#ifdef LL_TX_FLOW_CHANGE_DEBUG	
+#ifdef CONFIG_INET_LL_RX_FLUSH
+
+	if ( total_rx_packets && ll_flush_op ){  // Data reeived
+	
+#ifdef LL_HIGH_PACK_RATE_EXIT
+		cycles_t cyc_per_packet;
+#endif // 	LL_HIGH_PACK_RATE_EXIT
+
+		cycles_t rx_time = get_cycles(); 
+		
+		q_vector->last_irq_time = rx_time;  
+		
+/*************** calculate data rate for high rate flush exit ****************/
+		
+#ifdef LL_HIGH_PACK_RATE_EXIT
+		// Calc average adaptive time with form x = (x + n)/2
+		
+		cyc_per_packet = ( q_vector->cyc_per_packet + 
+		    (( rx_time - q_vector->last_rx_time )/total_rx_packets ))>>1;
+		if ( cyc_per_packet > LL_RX_CYC_PER_PACK_TIME_MAX ) // limit time
+			cyc_per_packet = LL_RX_CYC_PER_PACK_TIME_MAX;
+			
+		q_vector->cyc_per_packet = (u32) cyc_per_packet;
+		
+		q_vector->last_rx_time = rx_time;
+#endif // 	LL_HIGH_PACK_RATE_EXIT
+		
+/************* restore interrrupt rate if had been increased *****************/
+
+#ifdef LL_FLOW_CHANGE_DEBUG	
 		printk("RX IRQ smp %i\n", smp_processor_id());
-#endif // LL_TX_FLOW_CHANGE_DEBUG
+#endif // LL_FLOW_CHANGE_DEBUG
  	
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ 
 		if ( q_vector->ll_irq_set_low ) {  // if IRQ rate has been changed
@@ -1537,27 +1748,66 @@ next_desc:
 	}
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
+/********************** Calculate Running Data Rate **************************/
+
+#ifdef LL_DATARATE
+	{
+		unsigned long jif = jiffies;
+		
+		if ( q_vector->ll_cur_jif != jif ) // time change?
+		{
+		  unsigned long elap;
+		  elap = jif - q_vector->ll_cur_jif;
+		  
+		  q_vector->ll_cur_jif = jif;
+		  
+		  if ( elap == 1 )  // just one clock cycle
+		  {	
+			q_vector->ll_datarate_x16 += q_vector->ll_jif_count - 
+	                                       ( q_vector->ll_datarate_x16 >> 4 );
+	      }
+	      else if ( elap > 15 )  // long period
+	      {
+			q_vector->ll_datarate_x16 = q_vector->ll_jif_count << 4; // set to current rate
+		  }
+		  else // adjust by portion of period
+		  {
+			q_vector->ll_datarate_x16 = ( elap * q_vector->ll_jif_count ) +
+	         ( q_vector->ll_datarate_x16 - (( q_vector->ll_datarate_x16 * elap ) >> 4 ));
+	      }
+	        
+		  q_vector->ll_jif_count = 0; // clear for count of next jiffie
+		
+		/**************** adjust multiport port flow rate ********************/
+
+#ifdef LL_MULTI_PORT_QUICKEXIT
+		if ( q_vector->ll_multiport_check )
+			ixgbe_ll_check_port_flow( q_vector );
+#endif // LL_MULTI_PORT_QUICKEXIT
+
+		}
+	}
+#endif // LL_DATARATE
+
+/*****************************************************************************/
+
 	return cleaned;
 }
-
 /******************************* Low Lanency *********************************/
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
-#define LOW_LATENCY_RX_INPUT_RACE	         1000  // Previous Input SWISR Input Time
-#define LOW_LATENCY_RX_SINCE_START_TIME	     2000  // RX Reeived After Start
-#define LOW_LATENCY_WAIT_TIME			   150000  // Low Latency wait delay
-
 static int ixgbe_low_latency_recv( struct net_device *netdev, 
-								   void *dev_ref,
-								   unsigned short in_port )
+								   struct dev_ll_flush *flush )
+//								   void *dev_ref,
+//								   unsigned short in_port )
 {
 	struct ixgbe_adapter *adapter = netdev_priv(netdev);
-	struct ixgbe_q_vector *q_vector = dev_ref;
+//	struct ixgbe_q_vector *q_vector = dev_ref;
+	struct ixgbe_q_vector *q_vector = flush->dev_ref;
 	struct ixgbe_ring  *rx_ring;
 	struct pci_dev *pdev = adapter->pdev;
 	union ixgbe_adv_rx_desc *rx_desc, *next_rxd;
-	struct ixgbe_rx_buffer *rx_buffer_info, *next_buffer;
 	struct sk_buff *skb;
 	unsigned int i, rsc_count = 0;
 	u32 len, staterr;
@@ -1566,34 +1816,51 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 	int cleaned_count = 0;
 	int current_node = numa_node_id();
 	unsigned int total_rx_bytes = 0, total_rx_packets = 0;
+#ifdef LL_RX_FLOW_DIR_SET
+	int f;
+#endif // LL_RX_FLOW_DIR_SET 
 #ifdef IXGBE_FCOE
 	int ddp_bytes = 0;
 #endif /* IXGBE_FCOE */
 	
 	int pack_recv = 0;
 	bool found_data = false;
-	cycles_t end_time, elasped_time;
 	cycles_t ll_rx_start_time;
 	int q_vectors, vector, r_idx;
 	bool rx_clean_complete = true;
-	bool target_packet;
 	int  exit_stat = INET_LL_RX_FLUSH_OP;
 //	bool non_target_packet_rec = false;
 
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_MULTI_PORT_QUICKEXIT
+	int ll_loop_count=0;
+#else // LL_MULTI_PORT_QUICKEXIT...  cannot be enabled same time as LL_LOOP_QUICKEXIT
+#ifdef LL_LOOP_QUICKEXIT
+	int ll_loop_count=0;
+#endif	
+#endif // LL_MULTI_PORT_QUICKEXIT
+	unsigned short dest_port;
+
+	struct ixgbe_ring  *tx_inf_ring = NULL;
+	int tx_r_idx = 0;
+
+#ifdef LL_RX_FLUSH_TX
 	
 	// TX Buffer Processing
 	
 	struct ixgbe_ring  *tx_ring = NULL;
 	unsigned int tx_txr_count = 0;	
-	int tx_r_idx = 0;
 	unsigned int tx_i, tx_eop;	
 	union ixgbe_adv_tx_desc *tx_desc, *eop_desc;
+	bool did_tx_proc = false;
 
-#endif // CONFIG_INET_LL_RX_FLUSH_TX
+#endif // LL_RX_FLUSH_TX
+
+#ifdef 	LL_PROC_TIME_INFO
+	cycles_t ll_exit_start, ll_netif_start, ll_in_prc_fin;
+#endif // LL_PROC_TIME_INFO
 	
 //    printk( "IXGBE: Low Latency Rx, d=%p, ref=%p, port %i\n",
-//          netdev, dev_ref, in_port );  
+//          netdev, flush->dev_ref, flush->input_port );  
 	
 	ll_rx_start_time = get_cycles();
 
@@ -1618,6 +1885,10 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 
 	// *** Valid q_vector ***
 	
+	// Check for race between Low Latency Input and RX IRQ Input
+	if (( ll_rx_start_time - q_vector->last_irq_time ) < LOW_LATENCY_RX_INPUT_RACE ) 
+		return( INET_LL_RX_FLUSH_IMM_EXIT ); // Very Recent RX input, Just assume that target data was received
+	
     // Make sure ring is owned by current processor 
 	
 	r_idx = find_first_bit(q_vector->rxr_idx, adapter->num_rx_queues);
@@ -1636,39 +1907,40 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 #ifdef 	LL_CHECK_MATCH
 	if ( ++q_vector->smp_count >= 10000 )
 	{
-		printk( "LL call %u, SMP cpu hit %u mis %u, LL exec %u "
-		         " timout %u, PK hit %u mis %u\n", 
-				 q_vector->smp_count, q_vector->smp_match, 
+		printk( "LL call %u, SMP cpu %i Q %i hit %u mis %u, LL exec %u "
+		         " timout %u, PK hit %u mis %u  itr 0x%X\n", 
+				 q_vector->smp_count, smp_processor_id(), vector,
+				 q_vector->smp_match, 
 				 q_vector->smp_miss, q_vector->ll_exec,
 				 q_vector->ll_timeout, q_vector->ll_hit, 
-                                 q_vector->ll_miss );
+                 q_vector->ll_miss, q_vector->eitr );
                                  
-                 if ( i == q_vector->rxr_count ) // Current Miss
-					printk( "LL Miss: smp %i Qvect %i ",
-					 smp_processor_id(), vector);               
+        if ( i == q_vector->rxr_count ) // Current Miss
+			printk( "LL Miss: smp %i Qvect %i\n",
+				smp_processor_id(), vector);               
 			
-				q_vector->smp_count = 0;
-				q_vector->smp_match = 0;
-				q_vector->smp_miss = 0;
+		q_vector->smp_count = 0;
+		q_vector->smp_match = 0;
+		q_vector->smp_miss = 0;
 
-				q_vector->ll_exec = 0;
-				q_vector->ll_timeout = 0;
-				q_vector->ll_hit = 0;
-				q_vector->ll_miss = 0;
+		q_vector->ll_exec = 0;
+		q_vector->ll_timeout = 0;
+		q_vector->ll_hit = 0;
+		q_vector->ll_miss = 0;
 	}
-#endif // LL_TX_FLOW_CHANGE
+#endif // LL_FLOW_CHANGE
 
 	if ( i == q_vector->rxr_count ) // smp Processor not associated with queue
 	{
 
-#ifdef LL_TX_FLOW_CHANGE
+#ifdef LL_FLOW_CHANGE
 		// Check my Queue for very recent Flow Change
 		
 		if ( smp_processor_id() < adapter->num_rx_queues )
 		{
 			// Change Q's
 			struct ixgbe_q_vector *new_q_vector = adapter->q_vector[ smp_processor_id() ];  
-			if ( new_q_vector->tx_change ) // Recent Flow Change?
+			if ( new_q_vector )
 			{	
 				// Check Q Ownership by smp
 				
@@ -1685,62 +1957,123 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 				if ( i < new_q_vector->rxr_count ) // smp Processor associated with queue				
 				{
 #ifdef 	LL_CHECK_MATCH
-					q_vector->smp_count--; // dec old count
-#endif // LL_TX_FLOW_CHANGE
+					q_vector->smp_miss++;
+#endif // LL_FLOW_CHANGE
+
+#ifdef LL_RX_FLOW_DIR_SET
+
+					// look for info about packet from the queue packet received on
+					for ( f = 0; f < LL_FDIR_CNT; f++ )
+					{
+						int fdir;
+						struct ll_rx_fdir_info *pfdir;
+						
+						fdir = ( q_vector->ll_cur_rx_fdir_info_id + f ) & LL_FDIR_MASK;
+						pfdir = &q_vector->ll_rx_fdir[ fdir ];
+						if ( pfdir->dev_skb_id_ref == flush->dev_skb_id_ref )
+						{
+							if ( !pfdir->valid_data )
+								break;
+								    
+							// found associated skb info, set flow director
+							ixgbe_atr_rx( adapter, pfdir, smp_processor_id());
+#ifdef LL_EXTENDED_STATS
+							adapter->rx_ring[r_idx]->stats.flow_dir++;
+#endif  // LL_EXTENDED_STATS
+							goto Q_CHANGE;
+						}
+					}
+					// may not of found skb info
+					
+#endif // LL_RX_FLOW_DIR_SET			
+
+					if ( !new_q_vector->flow_change )
+						goto NEW_FLOW;
+					
+					 // recent TX flow director change ... try getting new rx data
+#ifdef LL_RX_FLOW_DIR_SET
+Q_CHANGE:					 
+#endif // LL_RX_FLOW_DIR_SET			
+
+					new_q_vector->flow_change = false;  
 					
 					q_vector = new_q_vector; // switch Qs
 					
 #ifdef 	LL_CHECK_MATCH
-					q_vector->smp_count++; // update new count
-#endif // LL_TX_FLOW_CHANGE
+					if ( ++q_vector->smp_count >= 10000 ) // update the new queue count
+					{
+						printk( "LL call %u, SMP cpu %i Q %i hit %u mis %u, LL exec %u "
+								" timout %u, PK hit %u mis %u  itr 0x%X\n", 
+							q_vector->smp_count, smp_processor_id(), smp_processor_id(),
+							q_vector->smp_match, 
+							q_vector->smp_miss, q_vector->ll_exec,
+							q_vector->ll_timeout, q_vector->ll_hit, 
+							q_vector->ll_miss, q_vector->eitr );
+                                 
+						if ( i == q_vector->rxr_count ) // Current Miss
+							printk( "LL Miss: smp %i Qvect %i\n",
+								smp_processor_id(), vector);               
+			
+						q_vector->smp_count = 0;
+						q_vector->smp_match = 0;
+						q_vector->smp_miss = 0;
+
+						q_vector->ll_exec = 0;
+						q_vector->ll_timeout = 0;
+						q_vector->ll_hit = 0;
+						q_vector->ll_miss = 0;
+					}
+#endif // LL_FLOW_CHANGE
 					
-#ifdef LL_TX_FLOW_CHANGE_DEBUG	
+#ifdef LL_FLOW_CHANGE_DEBUG	
 					printk("LL RX to smp %i\n", smp_processor_id());
-#endif // LL_TX_FLOW_CHANGE_DEBUG
+#endif // LL_FLOW_CHANGE_DEBUG
 					
 					goto USE_MY_Q;
 				}
 			}
 		}
 			
-#endif // LL_TX_FLOW_CHANGE
+#endif // LL_FLOW_CHANGE
 
 #ifdef 	LL_CHECK_MATCH
 		q_vector->smp_miss++;
-#endif // LL_TX_FLOW_CHANGE
+#endif // LL_FLOW_CHANGE
+NEW_FLOW:
 		return( INET_LL_RX_FLUSH_NO_SMP_MATCH );   // indicate not owned by current CPU
 	}
-#ifdef LL_TX_FLOW_CHANGE
+#ifdef LL_FLOW_CHANGE
 USE_MY_Q:
-#endif // LL_TX_FLOW_CHANGE
+#endif // LL_FLOW_CHANGE
 
 #ifdef 	LL_CHECK_MATCH
 	q_vector->smp_match++;
 #endif
 #endif
 
+#ifndef LL_ENTER_PEND_SWISR
+	// Check for currently processing input data (NAPI in progress)
+	//   needed if other cpu core is doing interrupts
+	if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ))
+		return( INET_LL_RX_FLUSH_IMM_EXIT );   // exit if Interrupt proc in progress
+#endif // LL_IGNOR_PEND_SWISR
+
 	// Clear RX Interrupt Received Flag
 	clear_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );
 
-	// Clear RX Interrupt Received Flag
+	// Clear RX Interrupt Aborted Flag
 	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX	
 	// Clear TX Interrupt Received Flag
-	clear_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
-	
-	// Check for race between Low Latency Input and RX Input
-	if (( get_cycles() - q_vector->last_rx_time ) < LOW_LATENCY_RX_INPUT_RACE ) 
-		return( INET_LL_RX_FLUSH_IMM_EXIT ); // Very Recent RX input, Just assume that target data was received
+	clear_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );	
 
 	rx_ring = adapter->rx_ring[r_idx];
 
 	preempt_disable();
 
-#if 0 // might consider	8/2/10
+#ifndef LL_ENTER_PEND_SWISR
 TRY_AGAIN:
-#endif
+#endif // LL_IGNOR_PEND_SWISR
 	
 	// Get RX Queue Processing ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
@@ -1750,7 +2083,9 @@ TRY_AGAIN:
 	}
 	
 	// Disable interrupts for this Q only
+#ifdef LL_DISABLE_IQR
 	ixgbe_irq_disable_queues(adapter, ((u64)1 << q_vector->v_idx));
+#endif  // LL_DISABLE_IQR
 
 	// Check for interrupt since clear of flag 
 	if ( test_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags ) != 0 ) {
@@ -1759,8 +2094,10 @@ TRY_AGAIN:
 		exit_stat = INET_LL_RX_FLUSH_IMM_EXIT;
 		goto EXIT_ENB;
 	}
-#if 0 // might consider	8/2/10
-	// Check for currently processing input data (NAPI in progress)
+
+#ifndef LL_ENTER_PEND_SWISR
+	// Recheck for current processing of input data (NAPI in progress)
+	//   needed for when other cpu core doing interrupts and quick exit
 	if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags )) {
 	
 		clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags );  // release
@@ -1769,34 +2106,128 @@ TRY_AGAIN:
 		
 		goto TRY_AGAIN;  
 	}	
-#endif
+#endif // LL_IGNOR_PEND_SWISR
 
 #ifdef 	LL_CHECK_MATCH
 	q_vector->ll_exec++;
 #endif // LL_CHECK_MATCH
 
+#ifdef LL_EXTENDED_STATS
+	rx_ring->stats.rx_flush_excute_tx_buf_cleared++;
+#endif  // LL_EXTENDED_STATS
+
+	// get TX ring info
 	
-	// Reload since first time was to chech Q owned by cpu 
-//	r_idx = find_first_bit(q_vector->rxr_idx, adapter->num_rx_queues);
-//	rx_ring = adapter->rx_ring[r_idx];
-   
-#if defined(CONFIG_DCA) || defined(CONFIG_DCA_MODULE)
-	if (adapter->flags & IXGBE_FLAG_DCA_ENABLED)
-		ixgbe_update_rx_dca(adapter, rx_ring);
-#endif
+	tx_r_idx = find_first_bit(q_vector->txr_idx, adapter->num_tx_queues);
+	tx_inf_ring = adapter->tx_ring[tx_r_idx];
 
 	i = rx_ring->next_to_clean;
 
-/******************* Short Period Loop to Wait for Data **********************/
+/********************* Flush Process Time Information ************************/
+
+#ifdef 	LL_PROC_TIME_INFO
+	q_vector->ll_entry_time += get_cycles() - ll_rx_start_time;
+	
+	if ( ++q_vector->ll_exec_count >= 10000 )
+	{
+		unsigned int ave_skb_time, ave_in_prc_time, ave_fin_prc_time;
+		unsigned int ave_entry_time, ave_exit_time, ave_no_rx_time;
+		
+#ifdef LL_RX_FLUSH_TX
+
+		unsigned int ave_tx_proc, ave_no_tx_proc;
+		
+		if ( q_vector->ll_tx_count )
+			ave_tx_proc = q_vector->ll_tx_prc_cyc/q_vector->ll_tx_count;
+		else
+			ave_tx_proc = 0;
+			
+		if ( q_vector->ll_no_tx_count )
+			ave_no_tx_proc = q_vector->ll_tx_no_prc_cyc/q_vector->ll_no_tx_count;
+		else
+			ave_no_tx_proc = 0;
+#endif // LL_RX_FLUSH_TX
+		
+		if ( q_vector->ll_skb_count )
+		{
+			ave_skb_time = q_vector->ll_rx_in_netif/q_vector->ll_skb_count;
+			ave_in_prc_time = q_vector->ll_in_prc_time/q_vector->ll_skb_count;
+			ave_fin_prc_time = q_vector->ll_fin_prc_time/q_vector->ll_skb_count;
+		}
+		else
+		{
+			ave_skb_time = 0;
+			ave_in_prc_time = 0;
+			ave_fin_prc_time = 0;
+		}
+		
+		if ( q_vector->ll_no_rx_count )
+			ave_no_rx_time = q_vector->ll_no_rx_loop_cyc/q_vector->ll_no_rx_count;
+		else
+			ave_no_rx_time = 0;
+			
+		ave_entry_time = q_vector->ll_entry_time/q_vector->ll_exec_count;
+		ave_exit_time = q_vector->ll_exit_time/q_vector->ll_exec_count;
+		
+		printk( "LL exec %u cyc in %i ex %i n skb %i cyc get %i netif %i fin %i "
+	            "no rx cyc %i" 
+#ifdef LL_RX_FLUSH_TX
+				" TX n %i cyc %i, no %i"
+#endif // LL_RX_FLUSH_TX
+				" itr 0x%X\n",
+				q_vector->ll_exec_count, ave_entry_time, ave_exit_time,
+				 q_vector->ll_skb_count, 
+				ave_in_prc_time, ave_skb_time, ave_fin_prc_time,
+				ave_no_rx_time
+#ifdef LL_RX_FLUSH_TX
+				,q_vector->ll_tx_count, ave_tx_proc, ave_no_tx_proc
+#endif // LL_RX_FLUSH_TX
+				 ,q_vector->eitr );
+				
+		q_vector->ll_exec_count = 0;
+		q_vector->ll_skb_count = 0;
+		q_vector->ll_no_rx_loop_cyc = 0;
+		q_vector->ll_rx_in_netif = 0;
+		q_vector->ll_in_prc_time = 0;
+		q_vector->ll_fin_prc_time = 0;
+		q_vector->ll_entry_time = 0;
+		q_vector->ll_exit_time = 0;
+		q_vector->ll_no_rx_count = 0;
+	
+#ifdef LL_RX_FLUSH_TX
+		q_vector->ll_tx_count = 0;
+		q_vector->ll_no_tx_count = 0;
+		q_vector->ll_tx_prc_cyc = 0;
+		q_vector->ll_tx_no_prc_cyc = 0;
+#endif // LL_RX_FLUSH_TX		
+	}
+#endif // LL_PROC_TIME_INFO
+
+/**************** Loop to Wait and/or Processes Receive Data *****************/
 
 for ( ; ; ) {
+#ifdef 	LL_PROC_TIME_INFO
+	bool ll_skb_rec;
+	cycles_t ll_loop_start;
+	
+#ifdef LL_RX_FLUSH_TX
+	cycles_t ll_tx_start;	
+#endif // LL_RX_FLUSH_TX
+
+	ll_skb_rec = false;
+	ll_loop_start = get_cycles();
+	ll_in_prc_fin = ll_loop_start;
+#endif // LL_PROC_TIME_INFO
+
 	rx_desc = IXGBE_RX_DESC_ADV(*rx_ring, i);
 	staterr = le32_to_cpu(rx_desc->wb.upper.status_error);
-	rx_buffer_info = &rx_ring->rx_buffer_info[i];
 
 	while (staterr & IXGBE_RXD_STAT_DD) {
+		struct ixgbe_rx_buffer *rx_buffer_info, *next_buffer;
 		u32 upper_len = 0;
-
+		
+		rx_buffer_info = &rx_ring->rx_buffer_info[i];
+	
 		if (rx_ring->flags & IXGBE_RING_RX_PS_ENABLED) {
 			hdr_info = le16_to_cpu(ixgbe_get_hdr_info(rx_desc));
 			len = (hdr_info & IXGBE_RXDADV_HDRBUFLEN_MASK) >>
@@ -1951,26 +2382,68 @@ for ( ; ; ) {
 
 /****************************** New Packet ***********************************/
 
+#ifdef LL_DATARATE
+			q_vector->ll_jif_count++;  // packet count for this jiffy
+#endif // LL_DATARATE
+
 		// CONFIG_INET_LL_RX_FLUSH Information
 
-		skb->dev_ref = q_vector;	
-		skb->recv_dev = adapter->netdev;	
+			// set info to pass to receive socket
+			skb->dev_ref = q_vector;	
+			q_vector->ll_last_dev_skb_id_ref++;
+			skb->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+			skb->recv_dev = adapter->netdev;
 
 //		printk( "IXGBE: Packet Rec\n" );
 
+/*********************** packet specific protocol Info ***********************/			
+
 		// check for found packet
-		
-		target_packet = false;
 	{
-		struct iphdr *iph = (struct iphdr *)skb->data;
+		struct iphdr *iph;
+		
+#ifdef LL_RX_FLOW_DIR_SET
+		struct ll_rx_fdir_info *pll_fdir_info;
+		struct ethhdr *eth;
+#endif // LL_RX_FLOW_DIR_SET
+
+		iph = (struct iphdr *) &skb->data[0]; // eth hdr already pulled
+
+#ifdef LL_RX_FLOW_DIR_SET	
+		q_vector->ll_cur_rx_fdir_info_id = 
+					(q_vector->ll_cur_rx_fdir_info_id + 1) & LL_FDIR_MASK;
+					
+		pll_fdir_info = &q_vector->ll_rx_fdir[q_vector->ll_cur_rx_fdir_info_id];		
+		pll_fdir_info->dev_skb_id_ref = q_vector->ll_last_dev_skb_id_ref;
+
+		pll_fdir_info->dst_ipv4_addr = iph->daddr;
+		pll_fdir_info->src_ipv4_addr = iph->saddr;
+			
+		eth = (struct ethhdr *)(skb->data - ETH_HLEN);
+		pll_fdir_info->flex_bytes = eth->h_proto;
+			
+#endif // LL_RX_FLOW_DIR_SET	
 				
 	    if ( iph->protocol == IPPROTO_UDP ) {
-			struct udphdr *uh = (struct udphdr *)(iph + 1);
+			struct udphdr *uh = (struct udphdr *)(skb->data+(iph->ihl<<2));
 			
-			target_packet = true;
+			dest_port = uh->dest;
 			
-			if ( uh->dest == in_port ) {
+#ifdef LL_RX_FLOW_DIR_SET
+
+			pll_fdir_info->dst_port = dest_port;
+			pll_fdir_info->src_port = uh->source;
+			pll_fdir_info->l4type = IXGBE_ATR_L4TYPE_UDP;
+			pll_fdir_info->valid_data = true;
+				
+#endif // LL_RX_FLOW_DIR_SET			
+			
+			if ( dest_port == flush->input_port ) {
 				found_data = true;
+
+#ifdef LL_EXTENDED_STATS
+				rx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif  // LL_EXTENDED_STATS
 
 #ifdef 	LL_CHECK_MATCH
 				q_vector->ll_hit++;
@@ -1985,29 +2458,156 @@ for ( ; ; ) {
 				q_vector->ll_miss++;
 #endif			
 		}
-		else if ( iph->protocol == IPPROTO_TCP ) {
-		
-//			struct tcphdr *th = (struct tcphdr *)(iph + 1);
-//			if ( th->dest == in_port ) 
-//				found_data = true;
+		else if ( iph->protocol == IPPROTO_TCP ) 
+		{
+			struct tcphdr *th = (struct tcphdr *)(skb->data+(iph->ihl<<2));
+            dest_port = th->dest;
+           
+#ifdef LL_RX_FLOW_DIR_SET
 
-			target_packet = false;  // All TCP are not currently processed
-		}			
+			pll_fdir_info->dst_port = dest_port;
+			pll_fdir_info->src_port = th->source;
+			pll_fdir_info->l4type = IXGBE_ATR_L4TYPE_TCP;
+			pll_fdir_info->valid_data = true;
+				
+#endif // LL_RX_FLOW_DIR_SET			
+
+			if ( dest_port == flush->input_port ) {
+				found_data = true;
+
+#ifdef LL_EXTENDED_STATS
+				rx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif  // LL_EXTENDED_STATS
+
+#ifdef 	LL_CHECK_MATCH
+				q_vector->ll_hit++;
+#endif				
+
+#ifdef LOW_LAT_REC_DEBUG   
+				printk( "IXGBE: Found UDP\n" );
+#endif
+			}
+#ifdef 	LL_CHECK_MATCH
+			else 
+				q_vector->ll_miss++;
+#endif			
+		}
+		else
+		{
+#ifdef LL_RX_FLOW_DIR_SET
+			pll_fdir_info->valid_data = false;
+#endif // LL_RX_FLOW_DIR_SET			
+			goto NOT_TARG_PACK; // not UDP or TCP packet	
+		}
 	}
+
+/********************** Count packets and port flows *************************/
+
+#ifdef LL_MULTI_PORT_QUICKEXIT
+	if ( q_vector->ll_multiport_check ) {
+	
+		// what about my system ip address???
+		
+		if ( q_vector->ll_port_list[ 0 ].port == dest_port ) // Current port/
+			q_vector->ll_port_list[ 0 ].count++;
+		else
+		{
+			int n;
+			unsigned long jif = jiffies; // bring local to minimize smp hit
+	
+			// search for port in current list
+			struct ll_port *port_list = &q_vector->ll_port_list[ 0 ];
+			
+			port_list->time_stamp = jif; // Just assume current was accessed this jiffie
+			port_list++; // start search on next port data
+			
+			for ( n = 1; n < LL_MULTI_PORT_LIST_SIZE; n++, port_list++ )
+			{
+				if ( jif - port_list->time_stamp > LL_MULTI_PORT_EXPIR_TIME )
+				{
+					n = LL_MULTI_PORT_LIST_SIZE;  // Expired, get oldest
+					break;
+				}
+				
+				if ( port_list->port == dest_port )
+					break;
+			}
+			
+			if ( n == LL_MULTI_PORT_LIST_SIZE ) // didn't find, create new
+			{
+				// shift all up 1 place, deleting last in list
+				
+				memmove( &q_vector->ll_port_list[ 1 ], &q_vector->ll_port_list[ 0 ],
+				         ((u8 *)&q_vector->ll_port_list[ LL_MULTI_PORT_LIST_SIZE - 1 ]) - 
+				           ((u8 *)&q_vector->ll_port_list[ 0 ]));
+				           
+				// initialize new port info
+				
+				q_vector->ll_port_list[ 0 ].port = dest_port;
+				q_vector->ll_port_list[ 0 ].count = 1;
+			}
+			else // move port data to front of list
+			{
+				struct ll_port cur_port;
+				
+				// move to front
+				cur_port = *port_list; // save
+				
+				// shift list up old data
+				memmove( &q_vector->ll_port_list[ 1 ], &q_vector->ll_port_list[ 0 ],
+				         ((u8 *)port_list) - ((u8 *)&q_vector->ll_port_list[ 0 ] ));
+				       
+				q_vector->ll_port_list[ 0 ] = cur_port; // data to front
+				q_vector->ll_port_list[ 0 ].count++;
+			}
+			q_vector->ll_port_list[ 0 ].time_stamp = jif; // set move time
+		}
+	}
+#endif // LL_MULTI_PORT_QUICKEXIT
+	
+/*************************** Process Packet **********************************/
 
 //		ll_skb_rx_proc_start_time = (unsigned int) get_cycles(); // MAP Test
 
+NOT_TARG_PACK:
+
 	{
+#ifdef LL_RX_QUEUE // Put in Queue for now
+
+
+		__skb_queue_tail(&q_vector->ll_rx_skb_q, skb ); // Juat stick on queue
+
+#ifdef 	LL_PROC_TIME_INFO
+		ll_in_prc_fin = get_cycles();
+		q_vector->ll_in_prc_time += ll_in_prc_fin - ll_loop_start;
+		ll_skb_rec = true;
+#endif // LL_PROC_TIME_INFO
+
+
+#else // LL_RX_QUEUE
 	   int ret;
-#if 0	   
-	   if ( target_packet )
-	   {
-#endif  //0
+
+#ifdef 	LL_PROC_TIME_INFO
+			ll_netif_start = get_cycles();
+			
+			q_vector->ll_in_prc_time += ll_netif_start - ll_loop_start;
+#endif // LL_PROC_TIME_INFO
+
+
 //			ret = netif_rx(skb);     // Does not run SWISR after RX operation
 			ret = netif_rx_ni(skb);  // This runs SWISRs after RX operation
 	    
+#ifdef 	LL_PROC_TIME_INFO
+			q_vector->ll_skb_count++;
+			
+			ll_in_prc_fin = get_cycles();
+			q_vector->ll_rx_in_netif += ll_in_prc_fin - ll_netif_start;
+			ll_skb_rec = true;
+#endif // LL_PROC_TIME_INFO
+
 //			printk( "IXGBE: Packet Proc\n" );
-#if 0	   
+
+#if 0	// causes net errors   
 		}
 		else  // Receive Through Normal Process
 		{
@@ -2022,6 +2622,7 @@ for ( ; ; ) {
 			non_target_packet_rec = true;		
 		}
 #endif  // 0
+#endif // LL_RX_QUEUE
 	}
 
 //		ll_skb_rx_proc_end_time = (unsigned int) get_cycles();  // Map Test
@@ -2047,41 +2648,90 @@ next_desc:
 
 		staterr = le32_to_cpu(rx_desc->wb.upper.status_error);
 		
-        if ( pack_recv > 64 ) {  // Low Latency Exit Max RX
+#ifdef 	LL_PROC_TIME_INFO
+		ll_loop_start = get_cycles(); // update for next loop
+		if ( ll_skb_rec )
+			q_vector->ll_fin_prc_time += ll_loop_start - ll_in_prc_fin;
+#endif // LL_PROC_TIME_INFO
+		
+        if ( pack_recv >= LOW_LATENCY_RX_EXIT_MAX ) {  // Low Latency Exit Max RX
 			rx_clean_complete = false;  // Not sure if all were cleared
-			break;
+			goto RX_DONE;
 		}
 	}
 	
-	end_time = get_cycles();
+#ifdef 	LL_PROC_TIME_INFO
+	// Keep Track of no rx receive loop time
+	if ( !ll_skb_rec ) {
+		q_vector->ll_no_rx_loop_cyc += get_cycles() - ll_loop_start;
+		q_vector->ll_no_rx_count++;
+	}
+#endif // LL_PROC_TIME_INFO
+
+/************************** Check for loop exit ******************************/
 	
-	elasped_time = end_time - ll_rx_start_time;
-	
-	if ( found_data || ( elasped_time > LOW_LATENCY_WAIT_TIME ))
-		break; // Exit Loop
+	if (( found_data ) ||    // Exit if any data for the interface was found
+		// Exit, data been received in queue, but no new data for this time through loop
+#ifdef LL_EXIT_ON_RX_NON_TARGET
+		(( pack_recv ) && ( q_vector->ll_rx_skb_q.qlen == 0 )) ||
+#endif // 	LL_EXIT_ON_RX_NON_TARGET
+#ifdef LL_MULTI_PORT_QUICKEXIT 
+		(( q_vector->ll_multiport_quickexit ) &&       // Quick exit flag set
+		 ( ++ll_loop_count >= LL_LOOP_COUNT_MAX )) ||  // do tx some buf processing
+#else  // LL_MULTI_PORT_QUICKEXIT...  cannot be enabled same time as LL_LOOP_QUICKEXIT
+#ifdef LL_LOOP_QUICKEXIT 
+		 ( ++ll_loop_count >= LL_LOOP_COUNT_MAX ) ||   // do tx some buf processing
+#endif // 	LL_LOOP_QUICKEXIT
+#endif // LL_MULTI_PORT_QUICKEXIT
+	    ( pack_recv >= LOW_LATENCY_RX_EXIT_COUNT ) || // Exit, moderate number of packets
+#ifdef LL_HIGH_PACK_RATE_EXIT
+		// Exit for currently fast data rate
+		( q_vector->cyc_per_packet < LOW_LATENCY_MAX_RATE_TIME ) ||
+#endif // 	LL_HIGH_PACK_RATE_EXIT
+		// Exit on having waited a maximum time
+	    (( get_cycles() - ll_rx_start_time ) > adapter->ll_wait_time ))
+		goto RX_DONE; // Exit Loop
 		
+/*********** Didn't Exit, put any queued bufs in network stack ***************/
+
+#ifdef LL_RX_QUEUE // put any queued rx bufs on network stack
+
+	if( q_vector->ll_rx_skb_q.qlen ) // Buffs
+	{
+		while( q_vector->ll_rx_skb_q.qlen )
+		{
+#ifdef 	LL_PROC_TIME_INFO
+			ll_netif_start = get_cycles();
+#endif // LL_PROC_TIME_INFO
+
+			skb = __skb_dequeue(&q_vector->ll_rx_skb_q);
+			
+			if ( q_vector->ll_rx_skb_q.qlen ) // Not last buf?
+				netif_rx(skb);  // input to network with no SWISR
+			else
+				netif_rx_ni(skb);  // Last one runs SWISR
+			
+#ifdef 	LL_PROC_TIME_INFO
+			q_vector->ll_skb_count++;
+			q_vector->ll_rx_in_netif += get_cycles() - ll_netif_start;
+#endif // LL_PROC_TIME_INFO
+		}
+		continue;  // go back to receiving buffers
+	}
+	
+#endif // LL_RX_QUEUE
+							
 /********** Don't have target RX buffer, try clearing a TX buffer ************/		
 
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 
-#if 0
-	// Check for TX interrupt processing since clear of flag 
-	if ( test_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags ) != 0 )
-		continue;
-#endif
-		
+#ifdef LL_PROC_TIME_INFO
+	ll_tx_start = get_cycles();
+#endif  /* LL_PROC_TIME_INFO */
+
 	// Get TX Queue processing ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 		continue;   // Did not obtain TX Queue ownership
-		
-#if 0
-	// Check for TX interrupt processing since clear of flag 
-	if ( test_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags ) != 0 ) {
-		// Interrupt occured since start, assume target data received 
-		clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags );  // release
-		continue;
-	}
-#endif
 		
 	if ( tx_ring == NULL )  // First Time
 	{
@@ -2107,7 +2757,16 @@ next_desc:
 		tx_buffer_info = &tx_ring->tx_buffer_info[tx_i];
 		skb = tx_buffer_info->skb;
 		
-//		did_tx_proc = true;
+		did_tx_proc = true;
+		
+#ifdef LL_EXTENDED_STATS
+		if ( q_vector->tx_buf_half ) {  // take to frees for each buffer
+			q_vector->tx_buf_half = false;
+			tx_ring->stats.rx_flush_excute_tx_buf_cleared++;
+		}
+		else
+			q_vector->tx_buf_half = true;
+#endif  // LL_EXTENDED_STATS
 
 		if ((tx_i == tx_eop) && skb) {
 #ifdef NETIF_F_TSO
@@ -2179,7 +2838,10 @@ next_desc:
 			}
 #endif
 		}
-		
+#ifdef LL_PROC_TIME_INFO
+		q_vector->ll_tx_prc_cyc += get_cycles() - ll_tx_start;
+		q_vector->ll_tx_count++;
+#endif  /* LL_PROC_TIME_INFO */
 //		printk("IXBGE: LL TX Buf Cleared\n");
 	}
 	else  // Move to next ring if present
@@ -2194,19 +2856,57 @@ next_desc:
 			tx_ring = NULL;   // Start with first ring
 			tx_txr_count = 0;
 		}
+		
+#ifdef LL_PROC_TIME_INFO
+		q_vector->ll_tx_no_prc_cyc += get_cycles() - ll_tx_start;
+		q_vector->ll_no_tx_count++;
+#endif  /* LL_PROC_TIME_INFO */
 	}
 	
 	// Release TX Queue Ownership
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags );  
+	smp_mb__after_clear_bit();
 	
-#endif // CONFIG_INET_LL_RX_FLUSH_TX
+#endif // LL_RX_FLUSH_TX
 
 } // for ( ; ; )
 
+RX_DONE:
+
 /********************** Buffer RX exit processing ****************************/ 
+
+#ifdef 	LL_PROC_TIME_INFO
+	ll_exit_start = get_cycles();
+#endif // LL_PROC_TIME_INFO
 
 if ( pack_recv ) // Only Do Exit Processing if a packet was Received
 {
+#ifdef LL_HIGH_PACK_RATE_EXIT
+	cycles_t cyc_per_packet, rx_time;
+#endif // 	LL_HIGH_PACK_RATE_EXIT
+
+#ifdef LL_RX_QUEUE // put any queued rx bufs on network stack
+
+	while( q_vector->ll_rx_skb_q.qlen )
+	{
+#ifdef 	LL_PROC_TIME_INFO
+		ll_netif_start = get_cycles();
+#endif // LL_PROC_TIME_INFO
+
+		skb = __skb_dequeue(&q_vector->ll_rx_skb_q);
+			
+		if ( q_vector->ll_rx_skb_q.qlen ) // Not last buf?
+			netif_rx(skb);  // input to network with no SWISR
+		else
+			netif_rx_ni(skb);  // Last one runs SWISR
+			
+#ifdef 	LL_PROC_TIME_INFO
+		q_vector->ll_skb_count++;
+		q_vector->ll_rx_in_netif += get_cycles() - ll_netif_start;
+#endif // LL_PROC_TIME_INFO
+	}
+	
+#endif // LL_RX_QUEUE
 
 #ifndef IXGBE_NO_LRO
 		if (adapter->flags2 & IXGBE_FLAG2_SWLRO_ENABLED)
@@ -2237,6 +2937,20 @@ if ( pack_recv ) // Only Do Exit Processing if a packet was Received
 	rx_ring->total_bytes += total_rx_bytes;
 	adapter->net_stats.rx_bytes += total_rx_bytes;
 	adapter->net_stats.rx_packets += total_rx_packets;
+	
+#ifdef LL_HIGH_PACK_RATE_EXIT
+	// Calc average adaptive time with form x = (x + n)/2
+	
+	rx_time = get_cycles();
+	
+	cyc_per_packet = ( q_vector->cyc_per_packet + 
+		    (( rx_time - q_vector->last_rx_time )/total_rx_packets ))>>1;
+	if ( cyc_per_packet > LL_RX_CYC_PER_PACK_TIME_MAX ) // limit time
+		cyc_per_packet = LL_RX_CYC_PER_PACK_TIME_MAX;
+	
+	q_vector->cyc_per_packet = (u32) cyc_per_packet;
+	q_vector->last_rx_time = rx_time;
+#endif // 	LL_HIGH_PACK_RATE_EXIT
 
 #ifdef CONFIG_IXGBE_NAPI
 #if 0
@@ -2258,57 +2972,122 @@ else  // "if ( pack_recv )"
 	q_vector->ll_timeout++;
 #endif // LL_CHECK_MATCH
 
+#ifdef LL_EXTENDED_STATS
+	tx_inf_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif  // LL_EXTENDED_STATS
+
 #if 0
 	printk( "IXGBE: Timeout\n" );
 #endif
 }
 
-//	if ( total_rx_packets ) // Data reeived
-//		q_vector->last_rx_time = get_cycles();  Only for the SWISR race check
-
 /************************** Adjust Interrupt Rate ****************************/
 
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
+#ifdef LL_EXIT_ON_RX_NON_TARGET
+	if ( !pack_recv )   // Timed Out found on data, Adjust Interrupt Rate to Max
+#else  // LL_EXIT_ON_RX_NON_TARGET
 	if ( !found_data )  // Didn't Find Data, Adjust Interrupt Rate to Max
+#endif // LL_EXIT_ON_RX_NON_TARGET
 	{
 		if ( !q_vector->ll_irq_set_low )
+//			operation should work with the adaptive setting
 //			( adapter->rx_itr_setting >= 1 )) // Not Adaptive or set
 		{
-			q_vector->ll_irq_set_low = true;
-			
-			q_vector->ll_eitr_save = q_vector->eitr;
+			u32 eitr;
 			
 			if (adapter->flags2 & IXGBE_FLAG2_RSC_ENABLED)
-				q_vector->eitr = IXGBE_MAX_RSC_INT_RATE;
+				eitr = IXGBE_MAX_RSC_INT_RATE;
 			else
-				q_vector->eitr = IXGBE_MAX_INT_RATE;
+				eitr = IXGBE_MAX_INT_RATE;
 				
-			// Set new interrupt rate for vector
-
-			ixgbe_write_eitr(q_vector);
+			if ( eitr > q_vector->eitr ) // Can change to Faster IRQ Rate
+			{
+				q_vector->ll_irq_set_low = true;
+				q_vector->ll_eitr_save = q_vector->eitr;
+				
+				q_vector->eitr = eitr;
 			
-		//	printk( "irq off ");
+				// Set new interrupt rate for vector
+				ixgbe_write_eitr(q_vector);
+			
+				//	printk( "irq off ");
+			}
 		}
 	}
-#ifdef LL_TX_FLOW_CHANGE
+#ifdef LL_FLOW_CHANGE
+#ifdef LL_EXIT_ON_RX_NON_TARGET
+	if ( found_data ) 
+#else  // LL_EXIT_ON_RX_NON_TARGET
 	else
+#endif // LL_EXIT_ON_RX_NON_TARGET
 	{
-		q_vector->tx_change = false;
+		q_vector->flow_change = false;
 	}
-#endif // LL_TX_FLOW_CHANGE
+#endif // LL_FLOW_CHANGE
 #endif // LOW_LATENCY_UDP_TCP_IRQ_ADJ
 	
+/********************** Calculate Running Data Rate **************************/
+
+#ifdef LL_DATARATE
+	{
+		unsigned long jif = jiffies;
+		
+		if ( q_vector->ll_cur_jif != jif ) // time change?
+		{
+		  unsigned long elap;
+		  elap = jif - q_vector->ll_cur_jif;
+		  
+		  q_vector->ll_cur_jif = jif;
+		  
+		  if ( elap == 1 )  // just one clock cycle
+		  {	
+			q_vector->ll_datarate_x16 += q_vector->ll_jif_count - 
+	                                      ( q_vector->ll_datarate_x16 >> 4 );
+	      }
+	      else if ( elap > 15 )  // long period
+	      {
+			q_vector->ll_datarate_x16 = q_vector->ll_jif_count << 4; // set to current rate
+		  }
+		  else // adjust by portion of period
+		  {
+			q_vector->ll_datarate_x16 = ( elap * q_vector->ll_jif_count ) +
+	         ( q_vector->ll_datarate_x16 - (( q_vector->ll_datarate_x16 * elap ) >> 4 ));
+	      }
+	      	        
+		  q_vector->ll_jif_count = 0; // clear for count of next jiffy
+
+		/**************** adjust multiport port flow rate ********************/
+
+#ifdef LL_MULTI_PORT_QUICKEXIT
+		if ( q_vector->ll_multiport_check )
+			ixgbe_ll_check_port_flow( q_vector );
+#endif // LL_MULTI_PORT_QUICKEXIT
+
+		}
+	}
+#endif // LL_DATARATE
+
 /*********************** Reenable normal processing **************************/
 
 	// Release Queue Ownership
 	clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); 
+	smp_mb__after_clear_bit();
+	
+#ifdef 	LL_PROC_TIME_INFO
+	q_vector->ll_exit_time += get_cycles() - ll_exit_start;
+#endif // LL_PROC_TIME_INFO
 
 EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 
 	// Reenable Interrupts for this Queue
 
-	if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ) == 0 ) {
+#ifdef LL_ENTER_PEND_SWISR
+	if ( test_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ) == 0 ) 
+#endif  // LL_ENTER_PEND_SWISR
+	{
 	
+#ifdef LL_DISABLE_IQR
 		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
 			u64 eics = ((u64)1 << q_vector->v_idx);
 			ixgbe_irq_enable_queues(adapter, eics);
@@ -2318,6 +3097,47 @@ EXIT_ENB:  //Interrupts may have been Disabled by RX-HW-ISR...
 	            ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ))
 				ixgbe_irq_rearm_queues(adapter, eics);
 		}
+#else
+ #if 0 // losses interrupts
+		if ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ) {
+			if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
+				u64 eics = ((u64)1 << q_vector->v_idx);
+				ixgbe_irq_enable_queues(adapter, eics);
+				ixgbe_irq_rearm_queues(adapter, eics);
+			}
+		}
+#else	
+		if (!test_bit(__IXGBE_DOWN, &adapter->state)) {
+			u64 eics = ((u64)1 << q_vector->v_idx);
+		
+			if ( test_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags ) != 0 ) 
+			{
+				// check for abort race condition
+#ifdef LL_RX_FLUSH_TX			
+	            if (( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) == 0 ) &&
+	                ( test_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) == 0 ))
+#else // LL_RX_FLUSH_TX
+	            if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) == 0 )
+#endif	// LL_RX_FLUSH_TX                
+				{
+					// not currently owned
+					ixgbe_irq_enable_queues(adapter, eics);
+					ixgbe_irq_rearm_queues(adapter, eics);
+				}
+				else //if ( pack_recv ) // took packets from queue, make sure don't stall
+					ixgbe_irq_rearm_queues(adapter, eics);
+			}
+			else if (( pack_recv ) || // took packets from queue, make sure don't stall
+#ifdef LL_RX_FLUSH_TX
+					 ( did_tx_proc ) ||		
+#endif // LL_RX_FLUSH_TX
+		             ( test_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags ) != 0 ) ||
+			         ( test_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags ) != 0 ))
+				ixgbe_irq_rearm_queues(adapter, eics);
+		}
+#endif			
+
+#endif // LL_DISABLE_IQR
 	}
 	
 EXIT:
@@ -2326,6 +3146,100 @@ EXIT:
 	preempt_enable();
 	return(	exit_stat );
 }								
+#endif	// CONFIG_INET_LL_RX_FLUSH
+
+/*****************************************************************************/
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+#ifdef LL_MULTI_PORT_QUICKEXIT
+
+/* This subroutine determines whether to go into ll quick exit mode */
+/* Note: Only called when jiffies count changes */
+
+void ixgbe_ll_check_port_flow(      // Check port flow for ll quick exit mode
+struct ixgbe_q_vector *q_vector )   // Queue to check port flow for
+{
+	int n;
+	struct ll_port *port_end, *port_large, *port_scan;
+	unsigned int count;
+	unsigned long datarate;
+	unsigned long jif = jiffies; // avoid some possible overhead
+	
+/************************* process port counts ********************************/
+
+	// find largest port count & port list within last LL_MULTI_PORT_EXPIR_TIME jiffies
+	// Note: first port data set always considered good
+	
+	port_end = &q_vector->ll_port_list[ 0 ];
+	port_large = port_end;  // init first as largest count
+	port_end++;
+	for ( n = 1; n < LL_MULTI_PORT_LIST_SIZE; n++, port_end++ )
+	{
+		if ( jif - port_end->time_stamp > LL_MULTI_PORT_EXPIR_TIME )
+			break; // don't want to consider old data
+	
+		if ( port_end->count > port_large->count ) 
+			port_large = port_end; // found larger count
+	}
+	
+	// count number of packets other then largest packet count
+	
+	count = 0;
+	port_scan = &q_vector->ll_port_list[ 0 ];
+	while ( port_scan < port_end )
+	{
+		if ( port_scan != port_large )  // don't count large target
+			count += port_scan->count;
+			
+		// divid count by 2 to prevent accumalated overflows
+		port_scan->count = port_scan->count >> 1; 
+	
+		port_scan++; // net set
+	}
+	
+/************ decide whether to go into ll quick exit mode *******************/	
+
+#ifdef LL_QUICKEXIT_INFO
+	if (( jif & 0x07F ) == 0 )
+	{
+		printk( "LL MP rate %lu, cnt %u other %u, tog %u b %u\n", 
+	           (( q_vector->ll_datarate_x16 * HZ ) >> 4),
+	           port_large->count, count, q_vector->ll_tog_count,
+	           q_vector->ll_multiport_quickexit );
+	    q_vector->ll_tog_count = 0;
+	}
+#endif // LL_QUICKEXIT_INFO
+	
+	// quick exit for multiple port per Q and lower then max data rates	
+	datarate = ( q_vector->ll_datarate_x16 * HZ ) >> 4;
+	if (( port_large->count < count ) &&
+	    ( datarate < LL_MULTI_PORT_MAX_DATA_RATE ) &&
+	    ( datarate > LL_MULTI_PORT_MIN_DATA_RATE ))
+	{
+#ifdef LL_QUICKEXIT_INFO
+		if ( !q_vector->ll_multiport_quickexit )
+			q_vector->ll_tog_count++;
+#endif // LL_QUICKEXIT_INFO
+
+		if ( q_vector->ll_qexit_on_weight < 8 )
+			q_vector->ll_qexit_on_weight++;
+	}
+	else
+	{
+		if ( q_vector->ll_qexit_on_weight > -7)
+			q_vector->ll_qexit_on_weight--;
+	}
+	
+	// Set quick exit based on current balance
+	
+	if ( q_vector->ll_qexit_on_weight > 0 )
+		q_vector->ll_multiport_quickexit = true;
+	else
+	    q_vector->ll_multiport_quickexit = false;
+
+}
+
+#endif  // LL_MULTI_PORT_QUICKEXIT
 #endif	// CONFIG_INET_LL_RX_FLUSH
 
 /*****************************************************************************/
@@ -2876,20 +3790,25 @@ static irqreturn_t ixgbe_msix_clean_tx(int irq, void *data)
 		return IRQ_HANDLED;
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
-	
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );
+
+#ifdef LL_RX_FLUSH_TX
+
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get TX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
 	r_idx = find_first_bit(q_vector->txr_idx, adapter->num_tx_queues);
@@ -2930,9 +3849,9 @@ static irqreturn_t ixgbe_msix_clean_tx(int irq, void *data)
 	 */
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
 	return IRQ_HANDLED;
@@ -2956,6 +3875,9 @@ static irqreturn_t ixgbe_msix_clean_rx(int irq, void *data)
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	if ( test_and_set_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{
       // Did not obtain lock
@@ -2963,9 +3885,10 @@ static irqreturn_t ixgbe_msix_clean_rx(int irq, void *data)
 	  
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
 	set_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );  // MAP
 
@@ -3039,20 +3962,25 @@ static irqreturn_t ixgbe_msix_clean_many(int irq, void *data)
 		return IRQ_HANDLED;
 		
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );
+
+#ifdef LL_RX_FLUSH_TX
 	
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get TX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
 	r_idx = find_first_bit(q_vector->txr_idx, adapter->num_tx_queues);
@@ -3070,18 +3998,22 @@ static irqreturn_t ixgbe_msix_clean_many(int irq, void *data)
 	}
 #ifdef CONFIG_INET_LL_RX_FLUSH
 	
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get RX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 		clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
 	set_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );  // MAP
 
@@ -3123,9 +4055,9 @@ static irqreturn_t ixgbe_msix_clean_many(int irq, void *data)
 	napi_schedule(&q_vector->napi);
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif // CONFIG_INET_LL_RX_FLUSH_TX
+#endif // LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); // release
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
@@ -3165,7 +4097,15 @@ static int ixgbe_clean_rxonly(struct napi_struct *napi, int budget)
 
 //		printk( "RX rx Proc A\n" );
 
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			u64 eics = ((u64)1 << q_vector->v_idx);
+			ixgbe_irq_enable_queues(adapter, eics);
+			ixgbe_irq_rearm_queues(adapter, eics);
+		}
 		return work_done;
 	}
 	
@@ -3225,7 +4165,10 @@ static int ixgbe_clean_rxtx_many(struct napi_struct *napi, int budget)
 	bool rx_clean_complete = true, tx_clean_complete = true;
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
+
+#ifdef LL_RX_FLUSH_TX
 
 	// Get TX Queue Ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
@@ -3237,13 +4180,19 @@ static int ixgbe_clean_rxtx_many(struct napi_struct *napi, int budget)
 		// Need to turn on interrupt at LL
 		clear_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ); 
 
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			u64 eics = ((u64)1 << q_vector->v_idx);
+			ixgbe_irq_enable_queues(adapter, eics);
+			ixgbe_irq_rearm_queues(adapter, eics);
+		}
 		return work_done;
 	}
-	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-	
-#endif // CONFIG_INET_LL_RX_FLUSH_TX	
+		
+#endif // LL_RX_FLUSH_TX	
 #endif // CONFIG_INET_LL_RX_FLUSH	
 
 	r_idx = find_first_bit(q_vector->txr_idx, adapter->num_tx_queues);
@@ -3263,16 +4212,24 @@ static int ixgbe_clean_rxtx_many(struct napi_struct *napi, int budget)
     {
 		// Did not obtain lock, but did HW interrupt
 		
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	    clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release TX
-#endif // CONFIG_INET_LL_RX_FLUSH_TX	
+#endif // LL_RX_FLUSH_TX	
 	    
 		napi_complete( napi );
 		
 		// Need to turn on interrupt at LL
 		clear_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ); 
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			u64 eics = ((u64)1 << q_vector->v_idx);
+			ixgbe_irq_enable_queues(adapter, eics);
+			ixgbe_irq_rearm_queues(adapter, eics);
+		}
 		return work_done;
 	}
 	
@@ -3320,9 +4277,9 @@ static int ixgbe_clean_rxtx_many(struct napi_struct *napi, int budget)
 	}
 	
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif // CONFIG_INET_LL_RX_FLUSH_TX	
+#endif // LL_RX_FLUSH_TX	
 	clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); // release
 #endif // CONFIG_INET_LL_RX_FLUSH	
 
@@ -3347,7 +4304,10 @@ static int ixgbe_clean_txonly(struct napi_struct *napi, int budget)
 	long r_idx;
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
+
+#ifdef LL_RX_FLUSH_TX
 
 	// Get TX Queue Ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
@@ -3359,13 +4319,19 @@ static int ixgbe_clean_txonly(struct napi_struct *napi, int budget)
 		// Need to turn on interrupt at LL
 		clear_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ); 
 
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			u64 eics = ((u64)1 << q_vector->v_idx);
+			ixgbe_irq_enable_queues(adapter, eics);
+			ixgbe_irq_rearm_queues(adapter, eics);
+		}
 		return work_done;
 	}
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-	
-#endif // CONFIG_INET_LL_RX_FLUSH_TX	
+#endif // LL_RX_FLUSH_TX	
 #endif // CONFIG_INET_LL_RX_FLUSH	
 
 	r_idx = find_first_bit(q_vector->txr_idx, adapter->num_tx_queues);
@@ -3396,9 +4362,9 @@ static int ixgbe_clean_txonly(struct napi_struct *napi, int budget)
 	}
 	
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
 	return work_done;
@@ -3748,33 +4714,38 @@ static irqreturn_t ixgbe_intr(int irq, void *data)
 #ifdef CONFIG_IXGBE_NAPI
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
+
+#ifdef LL_RX_FLUSH_TX
 	
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get TX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 
 	// Get RX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 		clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
 	set_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );  // MAP
 
@@ -3803,39 +4774,48 @@ static irqreturn_t ixgbe_intr(int irq, void *data)
 	adapter->tx_ring[0]->total_bytes = 0;
 	
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
+
+#ifdef LL_RX_FLUSH_TX
 	
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get TX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 	
 	ixgbe_clean_tx_irq(q_vector, adapter->tx_ring[0]);
 	
 #ifdef CONFIG_INET_LL_RX_FLUSH
 	
+	// set aborted flag before ownership to handle race condition	
+	set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  
+
 	// Get RX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
 	{	  		
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 		clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 
 		/* EIAM disabled interrupts (on this vector) for us */
 		
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		// exit with abort flag set when not getting ownership
 		return IRQ_HANDLED;
 	}
-	
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+
 	set_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );  // MAP
 
 #endif  // CONFIG_INET_LL_RX_FLUSH
@@ -3859,9 +4839,9 @@ static irqreturn_t ixgbe_intr(int irq, void *data)
 #endif  // CONFIG_IXGBE_NAPI
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif // CONFIG_INET_LL_RX_FLUSH_TX
+#endif // LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); // release
 #endif  // CONFIG_INET_LL_RX_FLUSH
 		
@@ -5954,7 +6934,10 @@ static int ixgbe_poll(struct napi_struct *napi, int budget)
 	}
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+
+	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
+
+#ifdef LL_RX_FLUSH_TX
 	
 	// Get RX queue ownership
 	if ( test_and_set_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ) != 0 )
@@ -5966,13 +6949,18 @@ static int ixgbe_poll(struct napi_struct *napi, int budget)
 		// Need to turn on interrupt at LL
 		clear_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ); 
 
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			ixgbe_irq_enable_queues(adapter, IXGBE_EIMS_RTX_QUEUE);
+			ixgbe_irq_rearm_queues(adapter, IXGBE_EIMS_RTX_QUEUE);
+		}
 		return work_done;
 	}
 	
-	set_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );  // MAP
-
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
 	tx_clean_complete = ixgbe_clean_tx_irq(q_vector, adapter->tx_ring[0]);
@@ -5983,16 +6971,23 @@ static int ixgbe_poll(struct napi_struct *napi, int budget)
 	{
 		// Did not obtain lock, but did HW interrupt
 		
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 		clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 		
 		napi_complete( napi );
 		
 		// Need to turn on interrupt at LL
 		clear_bit( IXGBE_LL_FLAG_RX_INT_OFF, &q_vector->ll_rx_flags ); 
 
-		set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );  // MAP
+		if ( test_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ) != 0 )
+			set_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+		else if (!test_bit(__IXGBE_DOWN, &adapter->state))
+		{
+			// rearm for race case
+			ixgbe_irq_enable_queues(adapter, IXGBE_EIMS_RTX_QUEUE);
+			ixgbe_irq_rearm_queues(adapter, IXGBE_EIMS_RTX_QUEUE);
+		}
 		return work_done;
 	}
 	
@@ -6025,9 +7020,9 @@ static int ixgbe_poll(struct napi_struct *napi, int budget)
 	}
 	
 #ifdef CONFIG_INET_LL_RX_FLUSH
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX
+#ifdef LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_TX_OWNER, &q_vector->ll_rx_flags ); // release
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+#endif  // LL_RX_FLUSH_TX
 	clear_bit( IXGBE_LL_FLAG_RX_OWNER, &q_vector->ll_rx_flags ); // release
 #endif  // CONFIG_INET_LL_RX_FLUSH
 
@@ -6334,6 +7329,74 @@ static void ixgbe_set_num_queues(struct ixgbe_adapter *adapter)
 
 	if (ixgbe_set_rss_queues(adapter))
 		return;
+}
+
+static u16 ixgbe_queue_id_for_cpu_id( struct net_device *dev,
+										u16 cpu_id, u16 default_id )
+{
+	u16 q;
+	struct ixgbe_adapter *adapter = netdev_priv(dev);
+	
+	// very ugly cpu to q relationship algorithms ...
+	
+	// do target idea of rx queue per cpu assumption 
+	if ( adapter->num_rx_queues == num_online_cpus() )
+		return( cpu_id ); // each cpu has own queue
+
+	if ( adapter->num_rx_queues == 1 ) 
+		return( 0 ); // only 1 queue for all cpus
+		
+	q = cpu_id;
+		
+	// assuming number of tx queues always == number of rx queues
+
+	if (adapter->flags & IXGBE_FLAG_FDIR_HASH_CAPABLE) {
+		while (unlikely(q >= dev->real_num_tx_queues))
+			q -= dev->real_num_tx_queues;
+		return q;
+	}
+
+#if 0	// don't have an skb at this time for this matchup
+#ifdef IXGBE_FCOE
+	if ((adapter->flags & IXGBE_FLAG_FCOE_ENABLED) &&
+	    ((skb->protocol == htons(ETH_P_FCOE)) ||
+	     (skb->protocol == htons(ETH_P_FIP)))) {
+		txq &= (adapter->ring_feature[RING_F_FCOE].indices - 1);
+		txq += adapter->ring_feature[RING_F_FCOE].mask;
+		return txq;
+	}
+#endif /* IXGBE_FCOE */
+
+	if (adapter->flags & IXGBE_FLAG_DCB_ENABLED) {
+		if (skb->priority == TC_PRIO_CONTROL)
+			txq = adapter->ring_feature[RING_F_DCB].indices - 1;
+		else
+			txq = (skb->vlan_tci & IXGBE_TX_FLAGS_VLAN_PRIO_MASK)
+			       >> 13;
+		return txq;
+	}
+	return skb_tx_hash(dev, skb);
+#endif	
+
+// search RX queues for smp cpu id match  
+
+	if ( cpu_id < adapter->num_rx_queues ) {
+		int i, r_idx;
+		struct ixgbe_q_vector *q_vector = adapter->q_vector[ cpu_id ];  
+		
+		r_idx = find_first_bit(q_vector->rxr_idx, adapter->num_rx_queues);
+				
+		for (i = 0; i < q_vector->rxr_count; i++)
+		{
+			if (r_idx == cpu_id)  // match processor?
+				return( cpu_id );
+			
+			r_idx = find_next_bit(q_vector->rxr_idx, adapter->num_rx_queues,
+								  r_idx + 1);
+		}
+	}		
+		
+	return( default_id );	
 }
 
 static void ixgbe_acquire_msix_vectors(struct ixgbe_adapter *adapter,
@@ -6953,8 +8016,23 @@ static int ixgbe_alloc_q_vectors(struct ixgbe_adapter *adapter)
 
 #ifdef CONFIG_INET_LL_RX_FLUSH
 		q_vector->ll_rx_flags = 0;  // LL Map
-#endif		// CONFIG_INET_LL_RX_FLUSH
-		
+#ifdef LL_RX_QUEUE
+		skb_queue_head_init(&q_vector->ll_rx_skb_q);
+#endif // LL_RX_QUEUE
+#ifdef LL_DATARATE
+		q_vector->ll_datarate_x16 = 0; 
+		q_vector->ll_jif_count = 0; 
+		q_vector->ll_cur_jif = 0; // good init
+#endif // LL_DATARATE
+
+#ifdef LL_RX_QUEUE
+		skb_queue_head_init(&q_vector->ll_rx_skb_q);
+#endif // LL_RX_QUEUE
+#ifdef LL_EXTENDED_STATS
+		q_vector->tx_buf_half = false;
+#endif  // LL_EXTENDED_STATS
+#endif	// CONFIG_INET_LL_RX_FLUSH
+
 		adapter->q_vector[v_idx] = q_vector;
 	}
 
@@ -8734,7 +9812,49 @@ static void ixgbe_atr(struct ixgbe_adapter *adapter, struct sk_buff *skb,
 
 	/* This assumes the Rx queue and Tx queue are bound to the same CPU */
 	ixgbe_fdir_add_signature_filter_82599(&adapter->hw, &atr_input, queue);
+
+#ifdef LL_RX_FLOW_DIR_SET
+#ifdef LL_RX_FLOWDIR_DEBUG
+	printk("TX Fdir: s x%8.8X %u d x%8.8X %u q %u t %u f x%X v x%X\n",
+	        dst_ipv4_addr, dst_port, src_ipv4_addr, src_port,
+	        queue, l4type, flex_bytes, vlan_id );	        
+#endif // LL_RX_FLOWDIR_DEBUG
+#endif // LL_RX_FLOW_DIR_SET			
 }
+
+#ifdef LL_RX_FLOW_DIR_SET
+
+static void ixgbe_atr_rx(struct ixgbe_adapter *adapter,
+	              struct ll_rx_fdir_info *pll_fdir_info, int queue )
+{	              
+	struct ixgbe_atr_input atr_input;
+
+	memset(&atr_input, 0, sizeof(struct ixgbe_atr_input));
+
+	/* This assumes the Rx queue and Tx queue are bound to the same CPU */
+	
+	/* src and dst are not inverted, since from receiver side */
+
+//	ixgbe_atr_set_vlan_id_82599(&atr_input, vlan_id);
+	// VLAN not supported at this time
+
+	ixgbe_atr_set_src_port_82599(&atr_input, pll_fdir_info->src_port);
+	ixgbe_atr_set_dst_port_82599(&atr_input, pll_fdir_info->dst_port);
+	ixgbe_atr_set_flex_byte_82599(&atr_input, pll_fdir_info->flex_bytes);
+	ixgbe_atr_set_l4type_82599(&atr_input, pll_fdir_info->l4type);
+	ixgbe_atr_set_src_ipv4_82599(&atr_input, pll_fdir_info->src_ipv4_addr);
+	ixgbe_atr_set_dst_ipv4_82599(&atr_input, pll_fdir_info->dst_ipv4_addr);
+
+	ixgbe_fdir_add_signature_filter_82599(&adapter->hw, &atr_input, queue);
+	
+#ifdef LL_RX_FLOWDIR_DEBUG
+	printk("RX Fdir: s x%8.8X %u d x%8.8X %u q %u t %u f x%X v x%X\n",
+	        pll_fdir_info->src_ipv4_addr, pll_fdir_info->src_port, 
+	        pll_fdir_info->dst_ipv4_addr, pll_fdir_info->dst_port,
+	        queue, pll_fdir_info->l4type, pll_fdir_info->flex_bytes, 0 );	        
+#endif // LL_RX_FLOWDIR_DEBUG
+}	              
+#endif // LL_RX_FLOW_DIR_SET			
 
 static int __ixgbe_maybe_stop_tx(struct net_device *netdev,
                                  struct ixgbe_ring *tx_ring, int size)
@@ -8881,44 +10001,67 @@ xmit_fcoe:
 		++tx_ring->atr_count;
 		
 #ifdef CONFIG_SMP
-#ifdef CONFIG_INET_LL_TX_FLOW_CHANGE
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
 
 //		if ( skb->flow_change_tag )
 //			printk( "Flow tag\n" );
 		
-		if (( skb->flow_change_tag ||
+		if (( skb->flow.flow_change ||
 				(tx_ring->atr_count >= tx_ring->atr_sample_rate)) &&
 #else
 		if ((tx_ring->atr_count >= tx_ring->atr_sample_rate) &&
-#endif // CONFIG_INET_LL_TX_FLOW_CHANGE
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE
 #else
 		if ((tx_ring->atr_count >= tx_ring->atr_sample_rate) &&
 #endif // CONFIG_SMP
 		    test_bit(__IXGBE_FDIR_INIT_DONE, &tx_ring->reinit_state)) {
-			ixgbe_atr(adapter, skb, tx_ring->queue_index, tx_flags);
-			tx_ring->atr_count = 0;
+		    
+			int queue_id;
+			
+			queue_id = tx_ring->queue_index;  // default cpu queue
+				
+#ifdef CONFIG_SMP
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+
+			// find rx queue for process cpu
+			if ( skb->flow.valid_rx ) // valid socket receive cpu id
+				queue_id = ixgbe_queue_id_for_cpu_id( netdev, 
+			                 skb->flow.rx_cpu, queue_id );
+			else if ( skb->flow.valid_tx ) // valid socket tx cpu id
+				queue_id = ixgbe_queue_id_for_cpu_id( netdev, 
+			                 skb->flow.tx_cpu, queue_id );
+			                 
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE
+#endif // CONFIG_SMP
+
+			// set flow director for queue
+			ixgbe_atr(adapter, skb, queue_id, tx_flags);
 			
 #ifdef CONFIG_SMP
-#ifdef CONFIG_INET_LL_TX_FLOW_CHANGE
+#ifdef CONFIG_INET_LL_RX_Q_FLOW_CHANGE
 
-			if ( skb->flow_change_tag )
+			if ( skb->flow.flow_change )
 			{
-				skb->flow_change_tag = false;
+				skb->flow.flow_change = false;
 				
-#ifdef LL_TX_FLOW_CHANGE
+#ifdef LL_EXTENDED_STATS
+				tx_ring->stats.flow_dir++;
+#endif  // LL_EXTENDED_STATS
+#ifdef LL_FLOW_CHANGE
 				// Tag the change
-				adapter->q_vector[tx_ring->queue_index]->tx_change = true;				
-#ifdef LL_TX_FLOW_CHANGE_DEBUG				
+				adapter->q_vector[ queue_id ]->flow_change = true;				
+#ifdef LL_FLOW_CHANGE_DEBUG				
 				//tx_ring->ll_change_count = 0;
 				printk( "LL TX Flow smp %i, Qtx %i %i\n",
 					smp_processor_id(), skb->queue_mapping, tx_ring->queue_index );	
-#endif	// LL_TX_FLOW_CHANGE_DEBUG
-#endif // LL_TX_FLOW_CHANGE
+#endif	// LL_FLOW_CHANGE_DEBUG
+#endif // LL_FLOW_CHANGE
 			}
 					
-#endif // CONFIG_INET_LL_TX_FLOW_CHANGE
+#endif // CONFIG_INET_LL_RX_Q_FLOW_CHANGE
 #endif // CONFIG_SMP
 			
+			tx_ring->atr_count = 0;
 		}
 	}
 

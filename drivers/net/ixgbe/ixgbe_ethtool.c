@@ -1206,12 +1206,28 @@ static void ixgbe_get_strings(struct net_device *netdev, u32 stringset,
 			p += ETH_GSTRING_LEN;
 			sprintf(p, "tx_queue_%u_bytes", i);
 			p += ETH_GSTRING_LEN;
+#ifdef LL_EXTENDED_STATS
+			sprintf(p, "tx_q_%u_tx_bufs_by_rx_flush", i);
+			p += ETH_GSTRING_LEN;
+			sprintf(p, "rx_q_%u_flush-no data", i);
+			p += ETH_GSTRING_LEN;
+			sprintf(p, "tx_q_%u_tagged_flow_dir", i);
+			p += ETH_GSTRING_LEN;
+#endif  // LL_EXTENDED_STATS
 		}
 		for (i = 0; i < adapter->num_rx_queues; i++) {
 			sprintf(p, "rx_queue_%u_packets", i);
 			p += ETH_GSTRING_LEN;
 			sprintf(p, "rx_queue_%u_bytes", i);
 			p += ETH_GSTRING_LEN;
+#ifdef LL_EXTENDED_STATS
+			sprintf(p, "rx_q_%u_flush_execute", i);
+			p += ETH_GSTRING_LEN;
+			sprintf(p, "rx_q_%u_targ_pkt_flushed", i);
+			p += ETH_GSTRING_LEN;
+			sprintf(p, "rx_q_%u_rx_side_flow_dir", i);
+			p += ETH_GSTRING_LEN;
+#endif  // LL_EXTENDED_STATS
 		}
 		if (adapter->flags & IXGBE_FLAG_DCB_ENABLED) {
 			for (i = 0; i < MAX_TX_PACKET_BUFFERS; i++) {
@@ -2264,6 +2280,10 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 		ec->rx_coalesce_usecs = 1000000/adapter->rx_eitr_param;
 		break;
 	}
+	
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	ec->rx_coalesce_usecs_high = adapter->ll_wait_time;
+#endif  // CONFIG_INET_LL_RX_FLUSH
 
 	/* if in mixed tx/rx queues per vector mode, report only rx settings */
 	if (adapter->q_vector[0]->txr_count && adapter->q_vector[0]->rxr_count)
@@ -2283,7 +2303,7 @@ static int ixgbe_get_coalesce(struct net_device *netdev,
 		ec->tx_coalesce_usecs = 1000000/adapter->tx_eitr_param;
 		break;
 	}
-
+	
 	return 0;
 }
 
@@ -2423,6 +2443,22 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 				/* rx only or mixed */
 				eitr = adapter->rx_eitr_param;
 				
+#ifdef LL_MULTI_PORT_QUICKEXIT
+			if ( eitr > LL_MULTI_PORT_INT_RATE ) // fast irq rate?
+			{
+				q_vector->ll_multiport_check = true;
+				
+				// clear data
+				
+				memset( &q_vector->ll_port_list[ 0 ], 0, 
+				         sizeof( q_vector->ll_port_list ));
+			}
+			else
+				q_vector->ll_multiport_check = false;
+				
+			q_vector->ll_multiport_quickexit = false;
+#endif // LL_MULTI_PORT_QUICKEXIT
+
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ
 			q_vector->ll_irq_set_low = false;
 			q_vector->ll_eitr_save = eitr;
@@ -2443,6 +2479,16 @@ static int ixgbe_set_coalesce(struct net_device *netdev,
 		q_vector->eitr = adapter->rx_eitr_param;
 		ixgbe_write_eitr(q_vector);
 	}
+
+#ifdef CONFIG_INET_LL_RX_FLUSH
+	if ( ec->rx_coalesce_usecs_high != 0 ) {
+		adapter->ll_wait_time = ec->rx_coalesce_usecs_high;
+		if ( adapter->ll_wait_time < LOW_LATENCY_WAIT_TIME_MIN )
+			adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME_MIN;
+		else if ( adapter->ll_wait_time > LOW_LATENCY_WAIT_TIME_MAX )
+			adapter->ll_wait_time = LOW_LATENCY_WAIT_TIME_MAX;
+	}
+#endif  // CONFIG_INET_LL_RX_FLUSH
 
 	/*
 	 * do reset here at the end to make sure EITR==0 case is handled
