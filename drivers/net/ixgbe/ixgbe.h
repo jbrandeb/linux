@@ -60,6 +60,8 @@
 #ifdef CONFIG_INET_LL_RX_FLUSH
 #define LOW_LATENCY_UDP_TCP_TX  1       // Include TX Buff Removal in Low Latency RX Proc
 #define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   // Include IRQ Rate increase for no Data
+#define LL_TX_FLOW_CHANGE  1            // Output TX Flow Change Tag
+//#define LL_TX_FLOW_CHANGE_DEBUG  1      // Output TX Flow Change Debug
 //#define LL_CHECK_MATCH  1				// Output LL Call, SMP, and Packet hit information 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 
@@ -275,6 +277,7 @@ struct ixgbe_ring {
 	u32 non_eop_descs;             /* track hardware descriptor chaining */
 	unsigned int size;		/* length in bytes */
 	dma_addr_t dma;			/* phys. address of descriptor ring */
+
 } ____cacheline_internodealigned_in_smp;
 
 enum ixgbe_ring_f_enum {
@@ -356,15 +359,19 @@ struct ixgbe_q_vector {
 
 	bool   ll_irq_set_low;       // The Irq has been set low
 	u32    ll_eitr_save;         // Save eitr Setting
-	
-	
-	
-#endif  /* LOW_LATENCY_UDP_TCP_IRQ */
+		
+#endif  /* LOW_LATENCY_UDP_TCP_IRQ_ADJ */
 		
 #ifdef 	LL_CHECK_MATCH
 	unsigned int ll_exec, ll_miss, ll_hit, ll_timeout;
 	unsigned int smp_match, smp_miss, smp_count;
 #endif  /* LL_CHECK_MATCH */
+
+#ifdef LL_TX_FLOW_CHANGE
+
+	bool tx_change;
+
+#endif // LL_TX_FLOW_CHANGE
 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 

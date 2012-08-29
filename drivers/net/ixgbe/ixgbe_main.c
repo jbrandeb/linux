@@ -1517,7 +1517,11 @@ next_desc:
 #ifdef CONFIG_INET_LL_RX_FLUSH
 	if ( total_rx_packets ) {  // Data reeived
 		q_vector->last_rx_time = get_cycles();  
-		
+
+#ifdef LL_TX_FLOW_CHANGE_DEBUG	
+		printk("RX IRQ smp %i\n", smp_processor_id());
+#endif // LL_TX_FLOW_CHANGE_DEBUG
+ 	
 #ifdef LOW_LATENCY_UDP_TCP_IRQ_ADJ 
 		if ( q_vector->ll_irq_set_low ) {  // if IRQ rate has been changed
 		
@@ -1542,7 +1546,7 @@ next_desc:
 
 #define LOW_LATENCY_RX_INPUT_RACE	         1000  // Previous Input SWISR Input Time
 #define LOW_LATENCY_RX_SINCE_START_TIME	     2000  // RX Reeived After Start
-#define LOW_LATENCY_WAIT_TIME			   100000  // Low Latency wait delay
+#define LOW_LATENCY_WAIT_TIME			   150000  // Low Latency wait delay
 
 static int ixgbe_low_latency_recv( struct net_device *netdev, 
 								   void *dev_ref,
@@ -1614,21 +1618,6 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 
 	// *** Valid q_vector ***
 	
-	// Clear RX Interrupt Received Flag
-	clear_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );
-
-	// Clear RX Interrupt Received Flag
-	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
-
-#ifdef CONFIG_INET_LL_RX_FLUSH_TX	
-	// Clear TX Interrupt Received Flag
-	clear_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );
-#endif  // CONFIG_INET_LL_RX_FLUSH_TX
-	
-	// Check for race between Low Latency Input and RX Input
-	if (( get_cycles() - q_vector->last_rx_time ) < LOW_LATENCY_RX_INPUT_RACE ) 
-		return( INET_LL_RX_FLUSH_IMM_EXIT ); // Very Recent RX input, Just assume that target data was received
-		
     // Make sure ring is owned by current processor 
 	
 	r_idx = find_first_bit(q_vector->rxr_idx, adapter->num_rx_queues);
@@ -1653,6 +1642,10 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 				 q_vector->smp_miss, q_vector->ll_exec,
 				 q_vector->ll_timeout, q_vector->ll_hit, 
                                  q_vector->ll_miss );
+                                 
+                 if ( i == q_vector->rxr_count ) // Current Miss
+					printk( "LL Miss: smp %i Qvect %i ",
+					 smp_processor_id(), vector);               
 			
 				q_vector->smp_count = 0;
 				q_vector->smp_match = 0;
@@ -1663,19 +1656,83 @@ static int ixgbe_low_latency_recv( struct net_device *netdev,
 				q_vector->ll_hit = 0;
 				q_vector->ll_miss = 0;
 	}
-#endif
+#endif // LL_TX_FLOW_CHANGE
 
 	if ( i == q_vector->rxr_count ) // smp Processor not associated with queue
 	{
+
+#ifdef LL_TX_FLOW_CHANGE
+		// Check my Queue for very recent Flow Change
+		
+		if ( smp_processor_id() < adapter->num_rx_queues )
+		{
+			// Change Q's
+			struct ixgbe_q_vector *new_q_vector = adapter->q_vector[ smp_processor_id() ];  
+			if ( new_q_vector->tx_change ) // Recent Flow Change?
+			{	
+				// Check Q Ownership by smp
+				
+				r_idx = find_first_bit(new_q_vector->rxr_idx, adapter->num_rx_queues);
+				
+				for (i = 0; i < new_q_vector->rxr_count; i++)
+				{
+					if (r_idx == smp_processor_id())  // Match current Processor
+						break;
+			
+					r_idx = find_next_bit(new_q_vector->rxr_idx, adapter->num_rx_queues,
+											r_idx + 1);
+				}		
+				if ( i < new_q_vector->rxr_count ) // smp Processor associated with queue				
+				{
+#ifdef 	LL_CHECK_MATCH
+					q_vector->smp_count--; // dec old count
+#endif // LL_TX_FLOW_CHANGE
+					
+					q_vector = new_q_vector; // switch Qs
+					
+#ifdef 	LL_CHECK_MATCH
+					q_vector->smp_count++; // update new count
+#endif // LL_TX_FLOW_CHANGE
+					
+#ifdef LL_TX_FLOW_CHANGE_DEBUG	
+					printk("LL RX to smp %i\n", smp_processor_id());
+#endif // LL_TX_FLOW_CHANGE_DEBUG
+					
+					goto USE_MY_Q;
+				}
+			}
+		}
+			
+#endif // LL_TX_FLOW_CHANGE
+
 #ifdef 	LL_CHECK_MATCH
 		q_vector->smp_miss++;
-#endif
+#endif // LL_TX_FLOW_CHANGE
 		return( INET_LL_RX_FLUSH_NO_SMP_MATCH );   // indicate not owned by current CPU
 	}
+#ifdef LL_TX_FLOW_CHANGE
+USE_MY_Q:
+#endif // LL_TX_FLOW_CHANGE
+
 #ifdef 	LL_CHECK_MATCH
 	q_vector->smp_match++;
 #endif
 #endif
+
+	// Clear RX Interrupt Received Flag
+	clear_bit( IXGBE_LL_FLAG_RX_INT, &q_vector->ll_rx_flags );
+
+	// Clear RX Interrupt Received Flag
+	clear_bit( IXGBE_LL_FLAG_INT_ABORTED, &q_vector->ll_rx_flags );
+
+#ifdef CONFIG_INET_LL_RX_FLUSH_TX	
+	// Clear TX Interrupt Received Flag
+	clear_bit( IXGBE_LL_FLAG_TX_INT, &q_vector->ll_rx_flags );
+#endif  // CONFIG_INET_LL_RX_FLUSH_TX
+	
+	// Check for race between Low Latency Input and RX Input
+	if (( get_cycles() - q_vector->last_rx_time ) < LOW_LATENCY_RX_INPUT_RACE ) 
+		return( INET_LL_RX_FLUSH_IMM_EXIT ); // Very Recent RX input, Just assume that target data was received
 
 	rx_ring = adapter->rx_ring[r_idx];
 
@@ -2233,6 +2290,12 @@ else  // "if ( pack_recv )"
 		//	printk( "irq off ");
 		}
 	}
+#ifdef LL_TX_FLOW_CHANGE
+	else
+	{
+		q_vector->tx_change = false;
+	}
+#endif // LL_TX_FLOW_CHANGE
 #endif // LOW_LATENCY_UDP_TCP_IRQ_ADJ
 	
 /*********************** Reenable normal processing **************************/
@@ -8834,6 +8897,28 @@ xmit_fcoe:
 		    test_bit(__IXGBE_FDIR_INIT_DONE, &tx_ring->reinit_state)) {
 			ixgbe_atr(adapter, skb, tx_ring->queue_index, tx_flags);
 			tx_ring->atr_count = 0;
+			
+#ifdef CONFIG_SMP
+#ifdef CONFIG_INET_LL_TX_FLOW_CHANGE
+
+			if ( skb->flow_change_tag )
+			{
+				skb->flow_change_tag = false;
+				
+#ifdef LL_TX_FLOW_CHANGE
+				// Tag the change
+				adapter->q_vector[tx_ring->queue_index]->tx_change = true;				
+#ifdef LL_TX_FLOW_CHANGE_DEBUG				
+				//tx_ring->ll_change_count = 0;
+				printk( "LL TX Flow smp %i, Qtx %i %i\n",
+					smp_processor_id(), skb->queue_mapping, tx_ring->queue_index );	
+#endif	// LL_TX_FLOW_CHANGE_DEBUG
+#endif // LL_TX_FLOW_CHANGE
+			}
+					
+#endif // CONFIG_INET_LL_TX_FLOW_CHANGE
+#endif // CONFIG_SMP
+			
 		}
 	}
 
