@@ -73,6 +73,7 @@
 
 #define LL_RX_FLUSH_TX  1               /* Include TX Buff Removal in Low Latency RX Proc */
 #define LOW_LATENCY_UDP_TCP_IRQ_ADJ 1   /* Include IRQ Rate increase for no Data */
+#define LL_EXTENDED_STATS  1            /* save extended stats for output by ethtool */
 
 #endif  /* CONFIG_INET_LL_RX_FLUSH */
 /* common prefix used by pr_<> macros */
@@ -195,6 +196,14 @@ struct ixgbe_rx_buffer {
 struct ixgbe_queue_stats {
 	u64 packets;
 	u64 bytes;
+#ifdef LL_EXTENDED_STATS
+	u64 rx_flush_excute_tx_buf_cleared; /* rx queue: ll flush execute count */
+					    /* tx queue: ll flush n tx buf cleared by flush */
+	u64 rx_targ_pkt_tx_flush_no_data;   /* rx queue: ll target pkts flushed */
+					    /* tx queue: ll no pkts received */
+	u64 flow_dir;			    /* rx queue: ii flush did a flow dir programming */
+					    /* tx queue: number of fow dirs from stack */
+#endif  /* LL_EXTENDED_STATS */
 };
 
 struct ixgbe_tx_queue_stats {

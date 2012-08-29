@@ -960,6 +960,9 @@ static void ixgbe_update_rx_dca(struct ixgbe_adapter *adapter,
 	u32 rxctrl = dca3_get_tag(rx_ring->dev, cpu);
 	u8 reg_idx = rx_ring->reg_idx;
 
+#ifdef LL_EXTENDED_STATS
+	rx_ring->stats.rx_flush_excute_tx_buf_cleared++;
+#endif /* LL_EXTENDED_STATS */
 
 	switch (hw->mac.type) {
 	case ixgbe_mac_82599EB:
@@ -2052,8 +2055,12 @@ poll_start:
 			case IPPROTO_UDP:
 				uh = (struct udphdr *)(skb->data+(iph->ihl<<2));
 
-				if (uh->dest == flush->input_port)
+				if (uh->dest == flush->input_port) {
 					found_data = true;
+#ifdef LL_EXTENDED_STATS
+					rx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif /* LL_EXTENDED_STATS */
+				}
 				break;
 			case IPPROTO_TCP:
 				th = (struct tcphdr *)(skb->data+(iph->ihl<<2));
@@ -2069,6 +2076,9 @@ poll_start:
 				if (th->dest == flush->input_port) {
 					if (tcp_flags > 1 || tcp_data_len)
 						found_data = true;
+#ifdef LL_EXTENDED_STATS
+					rx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif /* LL_EXTENDED_STATS */
 				}
 				break;
 			default:
@@ -2186,6 +2196,9 @@ poll_start:
 		tx_ring->stats.bytes += tx_total_bytes;
 		tx_ring->stats.packets += tx_total_packets;
 		u64_stats_update_end(&tx_ring->syncp);
+#ifdef LL_EXTENDED_STATS
+		tx_ring->stats.rx_flush_excute_tx_buf_cleared++;
+#endif
 		q_vector->tx.total_bytes += tx_total_bytes;
 		q_vector->tx.total_packets += tx_total_packets;
 
@@ -2247,6 +2260,13 @@ RX_DONE:
 		q_vector->rx.total_bytes += total_rx_bytes;
 
 		q_vector->last_flush_type = IXGBE_DATA_SINCE_FLUSH; /* Clear flush type */
+#ifdef LL_EXTENDED_STATS
+	} else {  /* "if (pack_recv)" */
+		if (!tx_ring && q_vector->tx.ring)
+			tx_ring = q_vector->tx.ring;
+		if (tx_ring)
+			tx_ring->stats.rx_targ_pkt_tx_flush_no_data++;
+#endif /* LL_EXTENDED_STATS */
 	}
 
 /************************** Adjust Interrupt Rate ****************************/
@@ -6772,6 +6792,10 @@ static void ixgbe_atr(struct ixgbe_ring *ring,
 							first->skb->flow.tx_cpu,
 							queue_index);
 
+#ifdef LL_EXTENDED_STATS
+	if (first->skb->flow.flow_change)
+		ring->stats.flow_dir++;
+#endif /* LL_EXTENDED_STATS */
 	first->skb->flow.flow_change = false;
 
 #endif /* CONFIG_INET_LL_RX_Q_FLOW_CHANGE */
