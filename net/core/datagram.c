@@ -56,6 +56,7 @@
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <trace/events/skb.h>
+#include <net/ll_poll.h>
 
 /*
  *	Is a socket 'connection oriented' ?
@@ -196,11 +197,16 @@ struct sk_buff *__skb_recv_datagram(struct sock *sk, unsigned int flags,
 			} else
 				__skb_unlink(skb, queue);
 
+			sk_mark_ll(sk, skb);
 			spin_unlock_irqrestore(&queue->lock, cpu_flags);
 			return skb;
 		}
 		spin_unlock_irqrestore(&queue->lock, cpu_flags);
 
+#ifdef CONFIG_INET_LL_RX_POLL
+		if (sk_valid_ll(sk) && sk_poll_ll(sk))
+			continue;
+#endif
 		/* User doesn't want to wait */
 		error = -EAGAIN;
 		if (!timeo)

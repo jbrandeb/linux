@@ -408,6 +408,10 @@ struct sk_buff {
 	struct sock		*sk;
 	struct net_device	*dev;
 
+#ifdef CONFIG_INET_LL_RX_POLL
+	struct napi_struct	*dev_ref; /* where this skb came from */
+#endif
+
 	/*
 	 * This is the control buffer. It is free to use for every
 	 * layer. Please put your private variables there. If you

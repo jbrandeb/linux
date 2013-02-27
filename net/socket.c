@@ -105,6 +105,12 @@
 #include <linux/sockios.h>
 #include <linux/atalk.h>
 
+#ifdef CONFIG_INET_LL_RX_POLL
+#include <net/ll_poll.h>
+int sysctl_net_ll_poll __read_mostly = 150000;
+EXPORT_SYMBOL_GPL(sysctl_net_ll_poll);
+#endif
+
 static int sock_no_open(struct inode *irrelevant, struct file *dontcare);
 static ssize_t sock_aio_read(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t pos);
@@ -1157,12 +1163,29 @@ EXPORT_SYMBOL(sock_create_lite);
 static unsigned int sock_poll(struct file *file, poll_table *wait)
 {
 	struct socket *sock;
+	unsigned int poll_result;
 
 	/*
 	 *      We can't return errors to poll, so it's either yes or no.
 	 */
 	sock = file->private_data;
-	return sock->ops->poll(file, sock, wait);
+
+	poll_result = sock->ops->poll(file, sock, wait);
+
+#ifdef CONFIG_INET_LL_RX_POLL
+	if (wait &&
+	    !(poll_result & (POLLRDNORM | POLLERR | POLLRDHUP | POLLHUP))) {
+
+		struct sock *sk = sock->sk;
+
+		/* only try once per poll */
+		if (sk_valid_ll(sk) && sk_poll_ll(sk))
+			poll_result = sock->ops->poll(file, sock, wait);
+
+	}
+#endif /* CONFIG_INET_LL_RX_POLL */
+
+	return poll_result;
 }
 
 static int sock_mmap(struct file *file, struct vm_area_struct *vma)
