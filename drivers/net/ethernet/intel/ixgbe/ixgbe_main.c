@@ -1755,8 +1755,9 @@ static bool ixgbe_add_rx_frag(struct ixgbe_ring *rx_ring,
 	return true;
 }
 
-static struct sk_buff *ixgbe_fetch_rx_buffer(struct ixgbe_ring *rx_ring,
-					     union ixgbe_adv_rx_desc *rx_desc)
+static noinline struct sk_buff *ixgbe_fetch_rx_buffer(
+				struct ixgbe_ring *rx_ring,
+				union ixgbe_adv_rx_desc *rx_desc)
 {
 	struct ixgbe_rx_buffer *rx_buffer;
 	struct sk_buff *skb;
