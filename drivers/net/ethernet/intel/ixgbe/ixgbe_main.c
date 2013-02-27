@@ -1971,6 +1971,12 @@ static int ixgbe_low_latency_recv(struct napi_struct *napi)
 
 	ixgbe_for_each_ring(ring, q_vector->rx) {
 		found = ixgbe_clean_rx_irq(q_vector, ring, 4);
+#ifdef LL_EXTENDED_STATS
+		if (found)
+			ring->stats.cleaned += found;
+		else
+			ring->stats.misses++;
+#endif
 		if (found)
 			break;
 	}
@@ -2522,6 +2528,13 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 
 	ixgbe_for_each_ring(ring, q_vector->tx)
 		clean_complete &= !!ixgbe_clean_tx_irq(q_vector, ring);
+
+#ifdef LL_EXTENDED_STATS
+	if (clean_complete)
+		q_vector->tx.ring->stats.cleaned++;
+	else
+		q_vector->tx.ring->stats.misses++;
+#endif
 
 	if (!ixgbe_qv_lock_napi(q_vector))
 		return budget;
