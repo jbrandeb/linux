@@ -421,6 +421,17 @@ config INET_LL_RX_POLL
 
 	  If unsure, say N.
 
+config INET_LL_TCP_POLL
+	bool "Low Latency TCP Receive Poll"
+	depends on INET_LL_RX_POLL
+	default n
+	---help---
+	  TCP support for Low Latency TCP Queue Poll.
+	  (For network cards that support this option.)
+	  Add support to the TCP stack for direct polling of the network card.
+
+	  If unsure, say N.
+
 config INET_DIAG
 	tristate "INET: socket monitoring interface"
 	default y
