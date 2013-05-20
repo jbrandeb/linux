@@ -19,6 +19,11 @@ ip_no_pmtu_disc - BOOLEAN
 	Disable Path MTU Discovery.
 	default FALSE
 
+ip_low_latency_poll - INTEGER
+	Low latency busy poll timeout. (needs CONFIG_INET_LL_RX_POLL)
+	Approximate time in ms to spin waiting for packets on the device queue.
+	default 0
+
 min_pmtu - INTEGER
 	default 552 - minimum discovered Path MTU
 
