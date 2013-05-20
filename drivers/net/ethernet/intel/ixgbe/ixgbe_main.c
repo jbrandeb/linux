@@ -47,6 +47,7 @@
 #include <linux/if_bridge.h>
 #include <linux/prefetch.h>
 #include <scsi/fc/fc_fcoe.h>
+#include <net/ll_poll.h>
 
 #include "ixgbe.h"
 #include "ixgbe_common.h"
@@ -143,6 +144,14 @@ MODULE_PARM_DESC(allow_unsupported_sfp,
 static int debug = -1;
 module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "Debug level (0=none,...,16=all)");
+
+#ifdef CONFIG_INET_LL_RX_POLL
+static int allow_unsafe_removal;
+static int unsafe_to_remove;
+module_param(allow_unsafe_removal, int, 0);
+MODULE_PARM_DESC(allow_unsafe_removal,
+	"Allow removal of module after low latency receive was used");
+#endif
 
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) 10 Gigabit PCI Express Network Driver");
@@ -1504,7 +1513,9 @@ static void ixgbe_rx_skb(struct ixgbe_q_vector *q_vector,
 {
 	struct ixgbe_adapter *adapter = q_vector->adapter;
 
-	if (!(adapter->flags & IXGBE_FLAG_IN_NETPOLL))
+	if (ixgbe_qv_ll_polling(q_vector))
+		netif_receive_skb(skb);
+	else if (!(adapter->flags & IXGBE_FLAG_IN_NETPOLL))
 		napi_gro_receive(&q_vector->napi, skb);
 	else
 		netif_rx(skb);
@@ -1892,9 +1903,9 @@ dma_sync:
  * expensive overhead for IOMMU access this provides a means of avoiding
  * it by maintaining the mapping of the page to the syste.
  *
- * Returns true if all work is completed without reaching budget
+ * Returns amount of work completed
  **/
-static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
+static int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 			       struct ixgbe_ring *rx_ring,
 			       const int budget)
 {
@@ -1976,6 +1987,7 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 		}
 
 #endif /* IXGBE_FCOE */
+		skb_mark_ll(skb, &q_vector->napi);
 		ixgbe_rx_skb(q_vector, skb);
 
 		/* update budget accounting */
@@ -1992,8 +2004,44 @@ static bool ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 	if (cleaned_count)
 		ixgbe_alloc_rx_buffers(rx_ring, cleaned_count);
 
-	return (total_rx_packets < budget);
+	return total_rx_packets;
 }
+
+#ifdef CONFIG_INET_LL_RX_POLL
+/* must be called with local_bh_disable()d */
+static int ixgbe_low_latency_recv(struct napi_struct *napi)
+{
+	struct ixgbe_q_vector *q_vector =
+			container_of(napi, struct ixgbe_q_vector, napi);
+	struct ixgbe_adapter *adapter = q_vector->adapter;
+	struct ixgbe_ring  *ring;
+	int found;
+
+	if (unlikely(!unsafe_to_remove)) {
+		unsafe_to_remove = 1;
+		if (!allow_unsafe_removal) {
+			pr_info("module may no longer be removed\n");
+			try_module_get(THIS_MODULE);
+		}
+	}
+
+	if (test_bit(__IXGBE_DOWN, &adapter->state))
+		return LL_FLUSH_FAILED;
+
+	if (!ixgbe_qv_lock_poll(q_vector))
+		return LL_FLUSH_BUSY;
+
+	ixgbe_for_each_ring(ring, q_vector->rx) {
+		found = ixgbe_clean_rx_irq(q_vector, ring, 4);
+		if (found)
+			break;
+	}
+
+	ixgbe_qv_unlock_poll(q_vector);
+
+	return LL_FLUSH_DONE;
+}
+#endif	/* CONFIG_INET_LL_RX_POLL */
 
 /**
  * ixgbe_configure_msix - Configure MSI-X hardware
@@ -2550,6 +2598,9 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 	ixgbe_for_each_ring(ring, q_vector->tx)
 		clean_complete &= !!ixgbe_clean_tx_irq(q_vector, ring);
 
+	if (!ixgbe_qv_lock_napi(q_vector))
+		return budget;
+
 	/* attempt to distribute budget to each queue fairly, but don't allow
 	 * the budget to go below 1 because we'll exit polling */
 	if (q_vector->rx.count > 1)
@@ -2558,9 +2609,10 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 		per_ring_budget = budget;
 
 	ixgbe_for_each_ring(ring, q_vector->rx)
-		clean_complete &= ixgbe_clean_rx_irq(q_vector, ring,
-						     per_ring_budget);
+		clean_complete &= (ixgbe_clean_rx_irq(q_vector, ring,
+				   per_ring_budget) < per_ring_budget);
 
+	ixgbe_qv_unlock_napi(q_vector);
 	/* If all work not completed, return budget and keep polling */
 	if (!clean_complete)
 		return budget;
@@ -3747,16 +3799,25 @@ static void ixgbe_napi_enable_all(struct ixgbe_adapter *adapter)
 {
 	int q_idx;
 
-	for (q_idx = 0; q_idx < adapter->num_q_vectors; q_idx++)
+	for (q_idx = 0; q_idx < adapter->num_q_vectors; q_idx++) {
+		ixgbe_qv_init_lock(adapter->q_vector[q_idx]);
 		napi_enable(&adapter->q_vector[q_idx]->napi);
+	}
 }
 
 static void ixgbe_napi_disable_all(struct ixgbe_adapter *adapter)
 {
 	int q_idx;
 
-	for (q_idx = 0; q_idx < adapter->num_q_vectors; q_idx++)
+	local_bh_disable(); /* for ixgbe_qv_lock_napi() */
+	for (q_idx = 0; q_idx < adapter->num_q_vectors; q_idx++) {
 		napi_disable(&adapter->q_vector[q_idx]->napi);
+		while (!ixgbe_qv_lock_napi(adapter->q_vector[q_idx])) {
+			pr_info("QV %d locked\n", q_idx);
+			mdelay(1);
+		}
+	}
+	local_bh_enable();
 }
 
 #ifdef CONFIG_IXGBE_DCB
@@ -7176,6 +7237,9 @@ static const struct net_device_ops ixgbe_netdev_ops = {
 #endif
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= ixgbe_netpoll,
+#endif
+#ifdef CONFIG_INET_LL_RX_POLL
+	.ndo_ll_poll		= ixgbe_low_latency_recv,
 #endif
 #ifdef IXGBE_FCOE
 	.ndo_fcoe_ddp_setup = ixgbe_fcoe_ddp_get,
