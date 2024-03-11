@@ -7,6 +7,7 @@
 
 #include <generated/utsrelease.h>
 #include <linux/crash_dump.h>
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_base.h"
 #include "ice_lib.h"
@@ -780,7 +781,7 @@ static void ice_print_topo_conflict(struct ice_vsi *vsi)
  */
 void ice_print_link_msg(struct ice_vsi *vsi, bool isup)
 {
-	struct ice_aqc_get_phy_caps_data *caps;
+	struct ice_aqc_get_phy_caps_data *caps __free(kfree) = NULL;
 	const char *an_advertised;
 	const char *fec_req;
 	const char *speed;
@@ -900,8 +901,6 @@ void ice_print_link_msg(struct ice_vsi *vsi, bool isup)
 	else
 		fec_req = "NONE";
 
-	kfree(caps);
-
 done:
 	netdev_info(vsi->netdev, "NIC Link is up %sbps Full Duplex, Requested FEC: %s, Negotiated FEC: %s, Autoneg Advertised: %s, Autoneg Negotiated: %s, Flow Control: %s\n",
 		    speed, fec_req, fec, an_advertised, an, fc);
@@ -948,8 +947,8 @@ static void ice_vsi_link_event(struct ice_vsi *vsi, bool link_up)
  */
 static void ice_set_dflt_mib(struct ice_pf *pf)
 {
+	u8 mib_type, *buf, *lldpmib __free(kfree) = NULL;
 	struct device *dev = ice_pf_to_dev(pf);
-	u8 mib_type, *buf, *lldpmib = NULL;
 	u16 len, typelen, offset = 0;
 	struct ice_lldp_org_tlv *tlv;
 	struct ice_hw *hw = &pf->hw;
@@ -1019,8 +1018,6 @@ static void ice_set_dflt_mib(struct ice_pf *pf)
 
 	if (ice_aq_set_lldp_mib(hw, mib_type, (void *)lldpmib, offset, NULL))
 		dev_dbg(dev, "%s Failed to set default LLDP MIB\n", __func__);
-
-	kfree(lldpmib);
 }
 
 /**
@@ -1908,8 +1905,8 @@ static void ice_handle_mdd_event(struct ice_pf *pf)
  */
 static int ice_force_phys_link_state(struct ice_vsi *vsi, bool link_up)
 {
-	struct ice_aqc_get_phy_caps_data *pcaps;
-	struct ice_aqc_set_phy_cfg_data *cfg;
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
+	struct ice_aqc_set_phy_cfg_data *cfg __free(kfree) = NULL;
 	struct ice_port_info *pi;
 	struct device *dev;
 	int retcode;
@@ -1920,7 +1917,6 @@ static int ice_force_phys_link_state(struct ice_vsi *vsi, bool link_up)
 		return 0;
 
 	dev = ice_pf_to_dev(vsi->back);
-
 	pi = vsi->port_info;
 
 	pcaps = kzalloc(sizeof(*pcaps), GFP_KERNEL);
@@ -1932,24 +1928,21 @@ static int ice_force_phys_link_state(struct ice_vsi *vsi, bool link_up)
 	if (retcode) {
 		dev_err(dev, "Failed to get phy capabilities, VSI %d error %d\n",
 			vsi->vsi_num, retcode);
-		retcode = -EIO;
-		goto out;
+		return -EIO;
 	}
 
 	/* No change in link */
 	if (link_up == !!(pcaps->caps & ICE_AQC_PHY_EN_LINK) &&
 	    link_up == !!(pi->phy.link_info.link_info & ICE_AQ_LINK_UP))
-		goto out;
+		return retcode;
 
 	/* Use the current user PHY configuration. The current user PHY
 	 * configuration is initialized during probe from PHY capabilities
 	 * software mode, and updated on set PHY configuration.
 	 */
 	cfg = kmemdup(&pi->phy.curr_user_phy_cfg, sizeof(*cfg), GFP_KERNEL);
-	if (!cfg) {
-		retcode = -ENOMEM;
-		goto out;
-	}
+	if (!cfg)
+		return -ENOMEM;
 
 	cfg->caps |= ICE_AQ_PHY_ENA_AUTO_LINK_UPDT;
 	if (link_up)
@@ -1964,9 +1957,6 @@ static int ice_force_phys_link_state(struct ice_vsi *vsi, bool link_up)
 		retcode = -EIO;
 	}
 
-	kfree(cfg);
-out:
-	kfree(pcaps);
 	return retcode;
 }
 
@@ -1978,7 +1968,7 @@ out:
  */
 static int ice_init_nvm_phy_type(struct ice_port_info *pi)
 {
-	struct ice_aqc_get_phy_caps_data *pcaps;
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
 	struct ice_pf *pf = pi->hw->back;
 	int err;
 
@@ -1991,14 +1981,12 @@ static int ice_init_nvm_phy_type(struct ice_port_info *pi)
 
 	if (err) {
 		dev_err(ice_pf_to_dev(pf), "Get PHY capability failed.\n");
-		goto out;
+		return err;
 	}
 
 	pf->nvm_phy_type_hi = pcaps->phy_type_high;
 	pf->nvm_phy_type_lo = pcaps->phy_type_low;
 
-out:
-	kfree(pcaps);
 	return err;
 }
 
@@ -2086,7 +2074,7 @@ static void ice_init_phy_cfg_dflt_override(struct ice_port_info *pi)
  */
 static int ice_init_phy_user_cfg(struct ice_port_info *pi)
 {
-	struct ice_aqc_get_phy_caps_data *pcaps;
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
 	struct ice_phy_info *phy = &pi->phy;
 	struct ice_pf *pf = pi->hw->back;
 	int err;
@@ -2106,7 +2094,7 @@ static int ice_init_phy_user_cfg(struct ice_port_info *pi)
 					  pcaps, NULL);
 	if (err) {
 		dev_err(ice_pf_to_dev(pf), "Get PHY capability failed.\n");
-		goto err_out;
+		return err;
 	}
 
 	ice_copy_phy_caps_to_cfg(pi, pcaps, &pi->phy.curr_user_phy_cfg);
@@ -2124,7 +2112,7 @@ static int ice_init_phy_user_cfg(struct ice_port_info *pi)
 		if (!ice_fw_supports_report_dflt_cfg(pi->hw) &&
 		    (pf->link_dflt_override.options & ICE_LINK_OVERRIDE_EN)) {
 			ice_init_phy_cfg_dflt_override(pi);
-			goto out;
+			return err;
 		}
 	}
 
@@ -2134,12 +2122,9 @@ static int ice_init_phy_user_cfg(struct ice_port_info *pi)
 	phy->curr_user_fec_req = ice_caps_to_fec_mode(pcaps->caps,
 						      pcaps->link_fec_options);
 	phy->curr_user_fc_req = ice_caps_to_fc_mode(pcaps->caps);
-
-out:
 	phy->curr_user_speed_req = ICE_AQ_LINK_SPEED_M;
 	set_bit(ICE_PHY_INIT_COMPLETE, pf->state);
-err_out:
-	kfree(pcaps);
+
 	return err;
 }
 
@@ -2153,10 +2138,10 @@ err_out:
  */
 static int ice_configure_phy(struct ice_vsi *vsi)
 {
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
+	struct ice_aqc_set_phy_cfg_data *cfg __free(kfree) = NULL;
 	struct device *dev = ice_pf_to_dev(vsi->back);
 	struct ice_port_info *pi = vsi->port_info;
-	struct ice_aqc_get_phy_caps_data *pcaps;
-	struct ice_aqc_set_phy_cfg_data *cfg;
 	struct ice_phy_info *phy = &pi->phy;
 	struct ice_pf *pf = vsi->back;
 	int err;
@@ -2184,7 +2169,7 @@ static int ice_configure_phy(struct ice_vsi *vsi)
 	if (err) {
 		dev_err(dev, "Failed to get PHY configuration, VSI %d error %d\n",
 			vsi->vsi_num, err);
-		goto done;
+		return err;
 	}
 
 	/* If PHY enable link is configured and configuration has not changed,
@@ -2192,7 +2177,7 @@ static int ice_configure_phy(struct ice_vsi *vsi)
 	 */
 	if (pcaps->caps & ICE_AQC_PHY_EN_LINK &&
 	    ice_phy_caps_equals_cfg(pcaps, &phy->curr_user_phy_cfg))
-		goto done;
+		return err;
 
 	/* Use PHY topology as baseline for configuration */
 	memset(pcaps, 0, sizeof(*pcaps));
@@ -2205,14 +2190,12 @@ static int ice_configure_phy(struct ice_vsi *vsi)
 	if (err) {
 		dev_err(dev, "Failed to get PHY caps, VSI %d error %d\n",
 			vsi->vsi_num, err);
-		goto done;
+		return err;
 	}
 
 	cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
-	if (!cfg) {
-		err = -ENOMEM;
-		goto done;
-	}
+	if (!cfg)
+		return -ENOMEM;
 
 	ice_copy_phy_caps_to_cfg(pi, pcaps, cfg);
 
@@ -2262,9 +2245,6 @@ static int ice_configure_phy(struct ice_vsi *vsi)
 		dev_err(dev, "Failed to set phy config, VSI %d error %d\n",
 			vsi->vsi_num, err);
 
-	kfree(cfg);
-done:
-	kfree(pcaps);
 	return err;
 }
 
@@ -2341,7 +2321,7 @@ static void ice_service_task(struct work_struct *work)
 	}
 
 	if (test_and_clear_bit(ICE_AUX_ERR_PENDING, pf->state)) {
-		struct iidc_event *event;
+		struct iidc_event *event __free(kfree) = NULL;
 
 		event = kzalloc(sizeof(*event), GFP_KERNEL);
 		if (event) {
@@ -2349,7 +2329,6 @@ static void ice_service_task(struct work_struct *work)
 			/* report the entire OICR value to AUX driver */
 			swap(event->reg, pf->oicr_err_reg);
 			ice_send_event_to_aux(pf, event);
-			kfree(event);
 		}
 	}
 
@@ -2364,13 +2343,12 @@ static void ice_service_task(struct work_struct *work)
 		ice_plug_aux_dev(pf);
 
 	if (test_and_clear_bit(ICE_FLAG_MTU_CHANGED, pf->flags)) {
-		struct iidc_event *event;
+		struct iidc_event *event __free(kfree) = NULL;
 
 		event = kzalloc(sizeof(*event), GFP_KERNEL);
 		if (event) {
 			set_bit(IIDC_EVENT_AFTER_MTU_CHANGE, event->type);
 			ice_send_event_to_aux(pf, event);
-			kfree(event);
 		}
 	}
 
@@ -4122,7 +4100,7 @@ done:
 static void ice_set_safe_mode_vlan_cfg(struct ice_pf *pf)
 {
 	struct ice_vsi *vsi = ice_get_main_vsi(pf);
-	struct ice_vsi_ctx *ctxt;
+	struct ice_vsi_ctx *ctxt __free(kfree) = NULL;
 	struct ice_hw *hw;
 	int status;
 
@@ -4156,13 +4134,11 @@ static void ice_set_safe_mode_vlan_cfg(struct ice_pf *pf)
 	if (status) {
 		dev_err(ice_pf_to_dev(vsi->back), "Failed to update VSI for safe mode VLANs, err %d aq_err %s\n",
 			status, ice_aq_str(hw->adminq.sq_last_status));
-	} else {
-		vsi->info.sec_flags = ctxt->info.sec_flags;
-		vsi->info.sw_flags2 = ctxt->info.sw_flags2;
-		vsi->info.inner_vlan_flags = ctxt->info.inner_vlan_flags;
+		return;
 	}
-
-	kfree(ctxt);
+	vsi->info.sec_flags = ctxt->info.sec_flags;
+	vsi->info.sw_flags2 = ctxt->info.sw_flags2;
+	vsi->info.inner_vlan_flags = ctxt->info.inner_vlan_flags;
 }
 
 /**
@@ -4420,7 +4396,7 @@ static char *ice_get_opt_fw_name(struct ice_pf *pf)
  */
 static void ice_request_fw(struct ice_pf *pf)
 {
-	char *opt_fw_filename = ice_get_opt_fw_name(pf);
+	char *opt_fw_filename __free(kfree) = ice_get_opt_fw_name(pf);
 	const struct firmware *firmware = NULL;
 	struct device *dev = ice_pf_to_dev(pf);
 	int err = 0;
@@ -4431,14 +4407,11 @@ static void ice_request_fw(struct ice_pf *pf)
 	 */
 	if (opt_fw_filename) {
 		err = firmware_request_nowarn(&firmware, opt_fw_filename, dev);
-		if (err) {
-			kfree(opt_fw_filename);
+		if (err)
 			goto dflt_pkg_load;
-		}
 
 		/* request for firmware was successful. Download to device */
 		ice_load_pkg(firmware, pf);
-		kfree(opt_fw_filename);
 		release_firmware(firmware);
 		return;
 	}
@@ -6677,7 +6650,7 @@ ice_update_vsi_tx_ring_stats(struct ice_vsi *vsi,
 static void ice_update_vsi_ring_stats(struct ice_vsi *vsi)
 {
 	struct rtnl_link_stats64 *net_stats, *stats_prev;
-	struct rtnl_link_stats64 *vsi_stats;
+	struct rtnl_link_stats64 *vsi_stats __free(kfree);
 	struct ice_pf *pf = vsi->back;
 	u64 pkts, bytes;
 	int i;
@@ -6740,8 +6713,6 @@ static void ice_update_vsi_ring_stats(struct ice_vsi *vsi)
 	stats_prev->tx_bytes = vsi_stats->tx_bytes;
 	stats_prev->rx_packets = vsi_stats->rx_packets;
 	stats_prev->rx_bytes = vsi_stats->rx_bytes;
-
-	kfree(vsi_stats);
 }
 
 /**
@@ -7855,8 +7826,8 @@ int ice_get_rss_key(struct ice_vsi *vsi, u8 *seed)
  */
 int ice_set_rss_hfunc(struct ice_vsi *vsi, u8 hfunc)
 {
+	struct ice_vsi_ctx *ctx __free(kfree) = NULL;
 	struct ice_hw *hw = &vsi->back->hw;
-	struct ice_vsi_ctx *ctx;
 	bool symm;
 	int err;
 
@@ -7890,7 +7861,6 @@ int ice_set_rss_hfunc(struct ice_vsi *vsi, u8 hfunc)
 			    hfunc == ICE_AQ_VSI_Q_OPT_RSS_HASH_SYM_TPLZ ?
 			    "Symmetric " : "");
 	}
-	kfree(ctx);
 	if (err)
 		return err;
 
@@ -7936,7 +7906,7 @@ static int ice_vsi_update_bridge_mode(struct ice_vsi *vsi, u16 bmode)
 {
 	struct ice_aqc_vsi_props *vsi_props;
 	struct ice_hw *hw = &vsi->back->hw;
-	struct ice_vsi_ctx *ctxt;
+	struct ice_vsi_ctx *ctxt __free(kfree) = NULL;
 	int ret;
 
 	vsi_props = &vsi->info;
@@ -7959,13 +7929,11 @@ static int ice_vsi_update_bridge_mode(struct ice_vsi *vsi, u16 bmode)
 	if (ret) {
 		dev_err(ice_pf_to_dev(vsi->back), "update VSI for bridge mode failed, bmode = %d err %d aq_err %s\n",
 			bmode, ret, ice_aq_str(hw->adminq.sq_last_status));
-		goto out;
+		return ret;
 	}
 	/* Update sw flags for book keeping */
 	vsi_props->sw_flags = ctxt->info.sw_flags;
 
-out:
-	kfree(ctxt);
 	return ret;
 }
 

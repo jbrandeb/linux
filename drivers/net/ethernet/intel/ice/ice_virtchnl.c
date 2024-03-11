@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2022, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_virtchnl.h"
 #include "ice_vf_lib_private.h"
 #include "ice.h"
@@ -2591,7 +2592,7 @@ error_param:
 static int ice_vc_get_rss_hena(struct ice_vf *vf)
 {
 	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
-	struct virtchnl_rss_hena *vrh = NULL;
+	struct virtchnl_rss_hena *vrh __free(kfree) = NULL;
 	int len = 0, ret;
 
 	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
@@ -2618,7 +2619,6 @@ err:
 	/* send the response back to the VF */
 	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_GET_RSS_HENA_CAPS, v_ret,
 				    (u8 *)vrh, len);
-	kfree(vrh);
 	return ret;
 }
 
@@ -2695,8 +2695,8 @@ err:
  */
 static int ice_vc_query_rxdid(struct ice_vf *vf)
 {
+	struct virtchnl_supported_rxdids *rxdid __free(kfree) = NULL;
 	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
-	struct virtchnl_supported_rxdids *rxdid = NULL;
 	struct ice_hw *hw = &vf->pf->hw;
 	struct ice_pf *pf = vf->pf;
 	int len = 0;
@@ -2740,7 +2740,6 @@ static int ice_vc_query_rxdid(struct ice_vf *vf)
 err:
 	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_GET_SUPPORTED_RXDIDS,
 				    v_ret, (u8 *)rxdid, len);
-	kfree(rxdid);
 	return ret;
 }
 
@@ -2951,7 +2950,7 @@ ice_vc_set_svm_caps(struct ice_vf *vf, struct virtchnl_vlan_caps *caps)
 static int ice_vc_get_offload_vlan_v2_caps(struct ice_vf *vf)
 {
 	enum virtchnl_status_code v_ret = VIRTCHNL_STATUS_SUCCESS;
-	struct virtchnl_vlan_caps *caps = NULL;
+	struct virtchnl_vlan_caps *caps __free(kfree) = NULL;
 	int err, len = 0;
 
 	if (!test_bit(ICE_VF_STATE_ACTIVE, vf->vf_states)) {
@@ -2977,7 +2976,6 @@ static int ice_vc_get_offload_vlan_v2_caps(struct ice_vf *vf)
 out:
 	err = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_GET_OFFLOAD_VLAN_V2_CAPS,
 				    v_ret, (u8 *)caps, len);
-	kfree(caps);
 	return err;
 }
 

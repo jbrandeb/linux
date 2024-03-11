@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2021-2023, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_base.h"
 #include "ice_lib.h"
@@ -1787,7 +1788,7 @@ static void ice_vc_fdir_clear_irq_ctx(struct ice_vf *vf)
 int ice_vc_add_fdir_fltr(struct ice_vf *vf, u8 *msg)
 {
 	struct virtchnl_fdir_add *fltr = (struct virtchnl_fdir_add *)msg;
-	struct virtchnl_fdir_add *stat = NULL;
+	struct virtchnl_fdir_add *stat __free(kfree) = NULL;
 	struct virtchnl_fdir_fltr_conf *conf;
 	enum virtchnl_status_code v_ret;
 	struct device *dev;
@@ -1842,7 +1843,7 @@ int ice_vc_add_fdir_fltr(struct ice_vf *vf, u8 *msg)
 		devm_kfree(dev, conf);
 		ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_ADD_FDIR_FILTER,
 					    v_ret, (u8 *)stat, len);
-		goto exit;
+		return ret;
 	}
 
 	ret = ice_vc_fdir_config_input_set(vf, fltr, conf, is_tun);
@@ -1888,8 +1889,6 @@ int ice_vc_add_fdir_fltr(struct ice_vf *vf, u8 *msg)
 		goto err_clr_irq;
 	}
 
-exit:
-	kfree(stat);
 	return ret;
 
 err_clr_irq:
@@ -1901,7 +1900,6 @@ err_free_conf:
 err_exit:
 	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_ADD_FDIR_FILTER, v_ret,
 				    (u8 *)stat, len);
-	kfree(stat);
 	return ret;
 }
 
@@ -1915,7 +1913,7 @@ err_exit:
 int ice_vc_del_fdir_fltr(struct ice_vf *vf, u8 *msg)
 {
 	struct virtchnl_fdir_del *fltr = (struct virtchnl_fdir_del *)msg;
-	struct virtchnl_fdir_del *stat = NULL;
+	struct virtchnl_fdir_del *stat __free(kfree) = NULL;
 	struct virtchnl_fdir_fltr_conf *conf;
 	enum virtchnl_status_code v_ret;
 	struct device *dev;
@@ -1976,8 +1974,6 @@ int ice_vc_del_fdir_fltr(struct ice_vf *vf, u8 *msg)
 		goto err_del_tmr;
 	}
 
-	kfree(stat);
-
 	return ret;
 
 err_del_tmr:
@@ -1985,7 +1981,6 @@ err_del_tmr:
 err_exit:
 	ret = ice_vc_send_msg_to_vf(vf, VIRTCHNL_OP_DEL_FDIR_FILTER, v_ret,
 				    (u8 *)stat, len);
-	kfree(stat);
 	return ret;
 }
 

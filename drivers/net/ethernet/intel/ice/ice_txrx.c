@@ -7,6 +7,7 @@
 #include <linux/netdevice.h>
 #include <linux/prefetch.h>
 #include <linux/bpf_trace.h>
+#include <linux/slab.h>
 #include <net/dsfield.h>
 #include <net/mpls.h>
 #include <net/xdp.h>

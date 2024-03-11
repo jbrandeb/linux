@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_dcb_lib.h"
 #include "ice_dcb_nl.h"
 #include "ice_devlink.h"
@@ -349,11 +350,11 @@ int ice_dcb_bwchk(struct ice_pf *pf, struct ice_dcbx_cfg *dcbcfg)
  */
 int ice_pf_dcb_cfg(struct ice_pf *pf, struct ice_dcbx_cfg *new_cfg, bool locked)
 {
+	struct ice_dcbx_cfg *curr_cfg, *old_cfg __free(kfree) = NULL;
 	struct ice_aqc_port_ets_elem buf = { 0 };
-	struct ice_dcbx_cfg *old_cfg, *curr_cfg;
 	struct device *dev = ice_pf_to_dev(pf);
+	struct iidc_event *event __free(kfree) = NULL;
 	int ret = ICE_DCB_NO_HW_CHG;
-	struct iidc_event *event;
 	struct ice_vsi *pf_vsi;
 
 	curr_cfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
@@ -394,20 +395,16 @@ int ice_pf_dcb_cfg(struct ice_pf *pf, struct ice_dcbx_cfg *new_cfg, bool locked)
 	pf_vsi = ice_get_main_vsi(pf);
 	if (!pf_vsi) {
 		dev_dbg(dev, "PF VSI doesn't exist\n");
-		ret = -EINVAL;
-		goto free_cfg;
+		return -EINVAL;
 	}
 
 	/* Notify AUX drivers about impending change to TCs */
 	event = kzalloc(sizeof(*event), GFP_KERNEL);
-	if (!event) {
-		ret = -ENOMEM;
-		goto free_cfg;
-	}
+	if (!event)
+		return -ENOMEM;
 
 	set_bit(IIDC_EVENT_BEFORE_TC_CHANGE, event->type);
 	ice_send_event_to_aux(pf, event);
-	kfree(event);
 
 	/* avoid race conditions by holding the lock while disabling and
 	 * re-enabling the VSI
@@ -448,8 +445,6 @@ out:
 	ice_dcb_ena_dis_vsi(pf, true, true);
 	if (!locked)
 		rtnl_unlock();
-free_cfg:
-	kfree(old_cfg);
 	return ret;
 }
 
@@ -604,9 +599,8 @@ dcb_error:
  */
 static int ice_dcb_init_cfg(struct ice_pf *pf, bool locked)
 {
-	struct ice_dcbx_cfg *newcfg;
+	struct ice_dcbx_cfg *newcfg __free(kfree) = NULL;
 	struct ice_port_info *pi;
-	int ret = 0;
 
 	pi = pf->hw.port_info;
 	newcfg = kmemdup(&pi->qos_cfg.local_dcbx_cfg, sizeof(*newcfg),
@@ -618,11 +612,9 @@ static int ice_dcb_init_cfg(struct ice_pf *pf, bool locked)
 
 	dev_info(ice_pf_to_dev(pf), "Configuring initial DCB values\n");
 	if (ice_pf_dcb_cfg(pf, newcfg, locked))
-		ret = -EINVAL;
+		return -EINVAL;
 
-	kfree(newcfg);
-
-	return ret;
+	return 0;
 }
 
 /**
@@ -633,8 +625,8 @@ static int ice_dcb_init_cfg(struct ice_pf *pf, bool locked)
  */
 int ice_dcb_sw_dflt_cfg(struct ice_pf *pf, bool ets_willing, bool locked)
 {
+	struct ice_dcbx_cfg *dcbcfg __free(kfree) = NULL;
 	struct ice_aqc_port_ets_elem buf = { 0 };
-	struct ice_dcbx_cfg *dcbcfg;
 	struct ice_port_info *pi;
 	struct ice_hw *hw;
 	int ret;
@@ -665,7 +657,6 @@ int ice_dcb_sw_dflt_cfg(struct ice_pf *pf, bool ets_willing, bool locked)
 	dcbcfg->app[0].prot_id = ETH_P_FCOE;
 
 	ret = ice_pf_dcb_cfg(pf, dcbcfg, locked);
-	kfree(dcbcfg);
 	if (ret)
 		return ret;
 
@@ -740,7 +731,6 @@ static int ice_dcb_noncontig_cfg(struct ice_pf *pf)
 void ice_pf_dcb_recfg(struct ice_pf *pf, bool locked)
 {
 	struct ice_dcbx_cfg *dcbcfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
-	struct iidc_event *event;
 	u8 tc_map = 0;
 	int v, ret;
 
@@ -785,6 +775,8 @@ void ice_pf_dcb_recfg(struct ice_pf *pf, bool locked)
 			ice_dcbnl_set_all(vsi);
 	}
 	if (!locked) {
+		struct iidc_event *event __free(kfree) = NULL;
+
 		/* Notify the AUX drivers that TC change is finished */
 		event = kzalloc(sizeof(*event), GFP_KERNEL);
 		if (!event)
@@ -792,7 +784,6 @@ void ice_pf_dcb_recfg(struct ice_pf *pf, bool locked)
 
 		set_bit(IIDC_EVENT_AFTER_TC_CHANGE, event->type);
 		ice_send_event_to_aux(pf, event);
-		kfree(event);
 	}
 }
 

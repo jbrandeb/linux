@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2022, Intel Corporation. */
 
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include "ice.h"
 #include "ice_common.h"
@@ -211,6 +212,7 @@ void ice_fwlog_deinit(struct ice_hw *hw)
 	if (hw->fwlog_ring.rings) {
 		ice_fwlog_free_ring_buffs(&hw->fwlog_ring);
 		kfree(hw->fwlog_ring.rings);
+		hw->fwlog_ring.rings = NULL;
 	}
 }
 
@@ -238,17 +240,15 @@ static int
 ice_aq_fwlog_set(struct ice_hw *hw, struct ice_fwlog_module_entry *entries,
 		 u16 num_entries, u16 options, u16 log_resolution)
 {
-	struct ice_aqc_fw_log_cfg_resp *fw_modules;
+	struct ice_aqc_fw_log_cfg_resp *fw_modules __free(kfree) = NULL;
 	struct ice_aqc_fw_log *cmd;
 	struct ice_aq_desc desc;
-	int status;
-	int i;
 
 	fw_modules = kcalloc(num_entries, sizeof(*fw_modules), GFP_KERNEL);
 	if (!fw_modules)
 		return -ENOMEM;
 
-	for (i = 0; i < num_entries; i++) {
+	for (int i = 0; i < num_entries; i++) {
 		fw_modules[i].module_identifier =
 			cpu_to_le16(entries[i].module_id);
 		fw_modules[i].log_level = entries[i].log_level;
@@ -268,13 +268,8 @@ ice_aq_fwlog_set(struct ice_hw *hw, struct ice_fwlog_module_entry *entries,
 	if (options & ICE_FWLOG_OPTION_UART_ENA)
 		cmd->cmd_flags |= ICE_AQC_FW_LOG_CONF_UART_EN;
 
-	status = ice_aq_send_cmd(hw, &desc, fw_modules,
-				 sizeof(*fw_modules) * num_entries,
-				 NULL);
-
-	kfree(fw_modules);
-
-	return status;
+	return ice_aq_send_cmd(hw, &desc, fw_modules,
+			       sizeof(*fw_modules) * num_entries, NULL);
 }
 
 /**
@@ -310,9 +305,9 @@ static int ice_aq_fwlog_get(struct ice_hw *hw, struct ice_fwlog_cfg *cfg)
 	struct ice_aqc_fw_log_cfg_resp *fw_modules;
 	struct ice_aqc_fw_log *cmd;
 	struct ice_aq_desc desc;
+	void *buf __free(kfree) = NULL;
 	u16 module_id_cnt;
 	int status;
-	void *buf;
 	int i;
 
 	memset(cfg, 0, sizeof(*cfg));
@@ -329,7 +324,7 @@ static int ice_aq_fwlog_get(struct ice_hw *hw, struct ice_fwlog_cfg *cfg)
 	status = ice_aq_send_cmd(hw, &desc, buf, ICE_AQ_MAX_BUF_LEN, NULL);
 	if (status) {
 		ice_debug(hw, ICE_DBG_FW_LOG, "Failed to get FW log configuration\n");
-		goto status_out;
+		return status;
 	}
 
 	module_id_cnt = le16_to_cpu(cmd->ops.cfg.mdl_cnt);
@@ -359,8 +354,6 @@ static int ice_aq_fwlog_get(struct ice_hw *hw, struct ice_fwlog_cfg *cfg)
 		cfg->module_entries[i].log_level = fw_module->log_level;
 	}
 
-status_out:
-	kfree(buf);
 	return status;
 }
 
@@ -449,7 +442,7 @@ int ice_fwlog_unregister(struct ice_hw *hw)
  */
 void ice_fwlog_set_supported(struct ice_hw *hw)
 {
-	struct ice_fwlog_cfg *cfg;
+	struct ice_fwlog_cfg *cfg __free(kfree) = NULL;
 	int status;
 
 	hw->fwlog_supported = false;
@@ -467,6 +460,4 @@ void ice_fwlog_set_supported(struct ice_hw *hw)
 			  status);
 	else
 		hw->fwlog_supported = true;
-
-	kfree(cfg);
 }

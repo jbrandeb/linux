@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018-2023, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_common.h"
 #include "ice_sched.h"
 #include "ice_adminq_cmd.h"
@@ -1967,7 +1968,7 @@ int ice_aq_alloc_free_res(struct ice_hw *hw,
 int
 ice_alloc_hw_res(struct ice_hw *hw, u16 type, u16 num, bool btm, u16 *res)
 {
-	struct ice_aqc_alloc_free_res_elem *buf;
+	struct ice_aqc_alloc_free_res_elem *buf __free(kfree) = NULL;
 	u16 buf_len;
 	int status;
 
@@ -1985,13 +1986,11 @@ ice_alloc_hw_res(struct ice_hw *hw, u16 type, u16 num, bool btm, u16 *res)
 
 	status = ice_aq_alloc_free_res(hw, buf, buf_len, ice_aqc_opc_alloc_res);
 	if (status)
-		goto ice_alloc_res_exit;
+		return status;
 
 	memcpy(res, buf->elem, sizeof(*buf->elem) * num);
 
-ice_alloc_res_exit:
-	kfree(buf);
-	return status;
+	return 0;
 }
 
 /**
@@ -2003,7 +2002,7 @@ ice_alloc_res_exit:
  */
 int ice_free_hw_res(struct ice_hw *hw, u16 type, u16 num, u16 *res)
 {
-	struct ice_aqc_alloc_free_res_elem *buf;
+	struct ice_aqc_alloc_free_res_elem *buf __free(kfree) = NULL;
 	u16 buf_len;
 	int status;
 
@@ -2021,7 +2020,6 @@ int ice_free_hw_res(struct ice_hw *hw, u16 type, u16 num, u16 *res)
 	if (status)
 		ice_debug(hw, ICE_DBG_SW, "CQ CMD Buffer:\n");
 
-	kfree(buf);
 	return status;
 }
 
@@ -2777,8 +2775,8 @@ ice_aq_list_caps(struct ice_hw *hw, void *buf, u16 buf_size, u32 *cap_count,
 int
 ice_discover_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_caps)
 {
+	void *cbuf __free(kfree) = NULL;
 	u32 cap_count = 0;
-	void *cbuf;
 	int status;
 
 	cbuf = kzalloc(ICE_AQ_MAX_BUF_LEN, GFP_KERNEL);
@@ -2795,7 +2793,6 @@ ice_discover_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_caps)
 				  ice_aqc_opc_list_dev_caps, NULL);
 	if (!status)
 		ice_parse_dev_caps(hw, dev_caps, cbuf, cap_count);
-	kfree(cbuf);
 
 	return status;
 }
@@ -2811,8 +2808,8 @@ ice_discover_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_caps)
 static int
 ice_discover_func_caps(struct ice_hw *hw, struct ice_hw_func_caps *func_caps)
 {
+	void *cbuf __free(kfree) = NULL;
 	u32 cap_count = 0;
-	void *cbuf;
 	int status;
 
 	cbuf = kzalloc(ICE_AQ_MAX_BUF_LEN, GFP_KERNEL);
@@ -2829,7 +2826,6 @@ ice_discover_func_caps(struct ice_hw *hw, struct ice_hw_func_caps *func_caps)
 				  ice_aqc_opc_list_func_caps, NULL);
 	if (!status)
 		ice_parse_func_caps(hw, func_caps, cbuf, cap_count);
-	kfree(cbuf);
 
 	return status;
 }
@@ -4841,8 +4837,8 @@ int
 ice_ena_vsi_rdma_qset(struct ice_port_info *pi, u16 vsi_handle, u8 tc,
 		      u16 *rdma_qset, u16 num_qsets, u32 *qset_teid)
 {
+	struct ice_aqc_add_rdma_qset_data *buf __free(kfree) = NULL;
 	struct ice_aqc_txsched_elem_data node = { 0 };
-	struct ice_aqc_add_rdma_qset_data *buf;
 	struct ice_sched_node *parent;
 	struct ice_hw *hw;
 	u16 i, buf_size;
@@ -4902,7 +4898,6 @@ ice_ena_vsi_rdma_qset(struct ice_port_info *pi, u16 vsi_handle, u8 tc,
 	}
 rdma_error_exit:
 	mutex_unlock(&pi->sched_lock);
-	kfree(buf);
 	return ret;
 }
 

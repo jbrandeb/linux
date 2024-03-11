@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2023, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_eswitch_br.h"
 #include "ice_repr.h"
@@ -121,9 +122,9 @@ static struct ice_rule_query_data *
 ice_eswitch_br_fwd_rule_create(struct ice_hw *hw, int vsi_idx, int port_type,
 			       const unsigned char *mac, u16 vid)
 {
+	struct ice_rule_query_data *rule __free(kfree) = NULL;
+	struct ice_adv_lkup_elem *list __free(kfree) = NULL;
 	struct ice_adv_rule_info rule_info = { 0 };
-	struct ice_rule_query_data *rule;
-	struct ice_adv_lkup_elem *list;
 	u16 lkups_cnt;
 	int err;
 
@@ -134,10 +135,8 @@ ice_eswitch_br_fwd_rule_create(struct ice_hw *hw, int vsi_idx, int port_type,
 		return ERR_PTR(-ENOMEM);
 
 	list = kcalloc(lkups_cnt, sizeof(*list), GFP_ATOMIC);
-	if (!list) {
-		err = -ENOMEM;
-		goto err_list_alloc;
-	}
+	if (!list)
+		return ERR_PTR(-ENOMEM);
 
 	switch (port_type) {
 	case ICE_ESWITCH_BR_UPLINK_PORT:
@@ -148,8 +147,7 @@ ice_eswitch_br_fwd_rule_create(struct ice_hw *hw, int vsi_idx, int port_type,
 						  vsi_idx);
 		break;
 	default:
-		err = -EINVAL;
-		goto err_add_rule;
+		return ERR_PTR(-EINVAL);
 	}
 
 	list[0].type = ICE_MAC_OFOS;
@@ -164,27 +162,18 @@ ice_eswitch_br_fwd_rule_create(struct ice_hw *hw, int vsi_idx, int port_type,
 
 	err = ice_add_adv_rule(hw, list, lkups_cnt, &rule_info, rule);
 	if (err)
-		goto err_add_rule;
+		return ERR_PTR(err);
 
-	kfree(list);
-
-	return rule;
-
-err_add_rule:
-	kfree(list);
-err_list_alloc:
-	kfree(rule);
-
-	return ERR_PTR(err);
+	return no_free_ptr(rule);
 }
 
 static struct ice_rule_query_data *
 ice_eswitch_br_guard_rule_create(struct ice_hw *hw, u16 vsi_idx,
 				 const unsigned char *mac, u16 vid)
 {
+	struct ice_rule_query_data *rule __free(kfree) = NULL;
+	struct ice_adv_lkup_elem *list __free(kfree) = NULL;
 	struct ice_adv_rule_info rule_info = { 0 };
-	struct ice_rule_query_data *rule;
-	struct ice_adv_lkup_elem *list;
 	int err = -ENOMEM;
 	u16 lkups_cnt;
 
@@ -192,11 +181,11 @@ ice_eswitch_br_guard_rule_create(struct ice_hw *hw, u16 vsi_idx,
 
 	rule = kzalloc(sizeof(*rule), GFP_KERNEL);
 	if (!rule)
-		goto err_exit;
+		return ERR_PTR(err);
 
 	list = kcalloc(lkups_cnt, sizeof(*list), GFP_ATOMIC);
 	if (!list)
-		goto err_list_alloc;
+		return ERR_PTR(err);
 
 	list[0].type = ICE_MAC_OFOS;
 	ether_addr_copy(list[0].h_u.eth_hdr.src_addr, mac);
@@ -211,18 +200,9 @@ ice_eswitch_br_guard_rule_create(struct ice_hw *hw, u16 vsi_idx,
 
 	err = ice_add_adv_rule(hw, list, lkups_cnt, &rule_info, rule);
 	if (err)
-		goto err_add_rule;
+		return ERR_PTR(err);
 
-	kfree(list);
-
-	return rule;
-
-err_add_rule:
-	kfree(list);
-err_list_alloc:
-	kfree(rule);
-err_exit:
-	return ERR_PTR(err);
+	return_ptr(rule);
 }
 
 static struct ice_esw_br_flow *
@@ -230,7 +210,7 @@ ice_eswitch_br_flow_create(struct device *dev, struct ice_hw *hw, int vsi_idx,
 			   int port_type, const unsigned char *mac, u16 vid)
 {
 	struct ice_rule_query_data *fwd_rule, *guard_rule;
-	struct ice_esw_br_flow *flow;
+	struct ice_esw_br_flow *flow __free(kfree) = NULL;
 	int err;
 
 	flow = kzalloc(sizeof(*flow), GFP_KERNEL);
@@ -244,7 +224,7 @@ ice_eswitch_br_flow_create(struct device *dev, struct ice_hw *hw, int vsi_idx,
 		dev_err(dev, "Failed to create eswitch bridge %sgress forward rule, err: %d\n",
 			port_type == ICE_ESWITCH_BR_UPLINK_PORT ? "e" : "in",
 			err);
-		goto err_fwd_rule;
+		return ERR_PTR(-ENOMEM);
 	}
 
 	guard_rule = ice_eswitch_br_guard_rule_create(hw, vsi_idx, mac, vid);
@@ -253,20 +233,14 @@ ice_eswitch_br_flow_create(struct device *dev, struct ice_hw *hw, int vsi_idx,
 		dev_err(dev, "Failed to create eswitch bridge %sgress guard rule, err: %d\n",
 			port_type == ICE_ESWITCH_BR_UPLINK_PORT ? "e" : "in",
 			err);
-		goto err_guard_rule;
+		ice_eswitch_br_rule_delete(hw, fwd_rule);
+		return ERR_PTR(err);
 	}
 
 	flow->fwd_rule = fwd_rule;
 	flow->guard_rule = guard_rule;
 
-	return flow;
-
-err_guard_rule:
-	ice_eswitch_br_rule_delete(hw, fwd_rule);
-err_fwd_rule:
-	kfree(flow);
-
-	return ERR_PTR(err);
+	return_ptr(flow);
 }
 
 static struct ice_esw_br_fdb_entry *
@@ -390,10 +364,10 @@ ice_eswitch_br_fdb_entry_create(struct net_device *netdev,
 				bool added_by_user,
 				const unsigned char *mac, u16 vid)
 {
+	struct ice_esw_br_fdb_entry *fdb_entry __free(kfree) = NULL;
 	struct ice_esw_br *bridge = br_port->bridge;
 	struct ice_pf *pf = bridge->br_offloads->pf;
 	struct device *dev = ice_pf_to_dev(pf);
-	struct ice_esw_br_fdb_entry *fdb_entry;
 	struct ice_esw_br_flow *flow;
 	struct ice_esw_br_vlan *vlan;
 	struct ice_hw *hw = &pf->hw;
@@ -428,7 +402,7 @@ ice_eswitch_br_fdb_entry_create(struct net_device *netdev,
 					  br_port->type, mac, vid);
 	if (IS_ERR(flow)) {
 		err = PTR_ERR(flow);
-		goto err_add_flow;
+		goto err_exit;
 	}
 
 	ether_addr_copy(fdb_entry->data.addr, mac);
@@ -449,7 +423,7 @@ ice_eswitch_br_fdb_entry_create(struct net_device *netdev,
 	if (err)
 		goto err_fdb_insert;
 
-	list_add(&fdb_entry->list, &bridge->fdb_list);
+	list_add(&no_free_ptr(fdb_entry)->list, &bridge->fdb_list);
 	trace_ice_eswitch_br_fdb_entry_create(fdb_entry);
 
 	ice_eswitch_br_fdb_offload_notify(netdev, mac, vid, event);
@@ -458,8 +432,6 @@ ice_eswitch_br_fdb_entry_create(struct net_device *netdev,
 
 err_fdb_insert:
 	ice_eswitch_br_flow_delete(pf, flow);
-err_add_flow:
-	kfree(fdb_entry);
 err_exit:
 	dev_err(dev, "Failed to create fdb entry, err: %d\n", err);
 }
@@ -510,7 +482,7 @@ ice_eswitch_br_fdb_work_alloc(struct switchdev_notifier_fdb_info *fdb_info,
 			      struct net_device *dev,
 			      unsigned long event)
 {
-	struct ice_esw_br_fdb_work *work;
+	struct ice_esw_br_fdb_work *work __free(kfree) = NULL;
 	unsigned char *mac;
 
 	work = kzalloc(sizeof(*work), GFP_ATOMIC);
@@ -521,17 +493,15 @@ ice_eswitch_br_fdb_work_alloc(struct switchdev_notifier_fdb_info *fdb_info,
 	memcpy(&work->fdb_info, fdb_info, sizeof(work->fdb_info));
 
 	mac = kzalloc(ETH_ALEN, GFP_ATOMIC);
-	if (!mac) {
-		kfree(work);
+	if (!mac)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	ether_addr_copy(mac, fdb_info->addr);
 	work->fdb_info.addr = mac;
 	work->event = event;
 	work->dev = dev;
 
-	return work;
+	return_ptr(work);
 }
 
 static int
@@ -705,12 +675,11 @@ ice_eswitch_br_vlan_create(u16 vid, u16 flags, struct ice_esw_br_port *port)
 	    (flags & BRIDGE_VLAN_INFO_UNTAGGED)) {
 		err = ice_eswitch_br_set_pvid(port, vlan);
 		if (err)
-			goto err_set_pvid;
+			return ERR_PTR(err);
 	} else if ((flags & BRIDGE_VLAN_INFO_PVID) ||
 		   (flags & BRIDGE_VLAN_INFO_UNTAGGED)) {
 		dev_info(dev, "VLAN push and pop are supported only simultaneously\n");
-		err = -EOPNOTSUPP;
-		goto err_set_pvid;
+		return ERR_PTR(-EOPNOTSUPP);
 	}
 
 	err = xa_insert(&port->vlans, vlan->vid, vlan, GFP_KERNEL);
@@ -719,13 +688,11 @@ ice_eswitch_br_vlan_create(u16 vid, u16 flags, struct ice_esw_br_port *port)
 
 	trace_ice_eswitch_br_vlan_create(vlan);
 
-	return vlan;
+	return_ptr(vlan);
 
 err_insert:
 	if (port->pvid)
 		ice_eswitch_br_clear_pvid(port);
-err_set_pvid:
-	kfree(vlan);
 	return ERR_PTR(err);
 }
 
@@ -1005,7 +972,7 @@ ice_eswitch_br_deinit(struct ice_esw_br_offloads *br_offloads,
 static struct ice_esw_br *
 ice_eswitch_br_init(struct ice_esw_br_offloads *br_offloads, int ifindex)
 {
-	struct ice_esw_br *bridge;
+	struct ice_esw_br *bridge __free(kfree) = NULL;
 	int err;
 
 	bridge = kzalloc(sizeof(*bridge), GFP_KERNEL);
@@ -1013,10 +980,8 @@ ice_eswitch_br_init(struct ice_esw_br_offloads *br_offloads, int ifindex)
 		return ERR_PTR(-ENOMEM);
 
 	err = rhashtable_init(&bridge->fdb_ht, &ice_fdb_ht_params);
-	if (err) {
-		kfree(bridge);
+	if (err)
 		return ERR_PTR(err);
-	}
 
 	INIT_LIST_HEAD(&bridge->fdb_list);
 	bridge->br_offloads = br_offloads;
@@ -1025,7 +990,7 @@ ice_eswitch_br_init(struct ice_esw_br_offloads *br_offloads, int ifindex)
 	xa_init(&bridge->ports);
 	br_offloads->bridge = bridge;
 
-	return bridge;
+	return_ptr(bridge);
 }
 
 static struct ice_esw_br *

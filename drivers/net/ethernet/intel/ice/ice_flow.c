@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_common.h"
 #include "ice_flow.h"
 #include <net/gre.h>
@@ -1348,7 +1349,7 @@ ice_flow_add_prof_sync(struct ice_hw *hw, enum ice_block blk,
 		       struct ice_flow_seg_info *segs, u8 segs_cnt,
 		       bool symm, struct ice_flow_prof **prof)
 {
-	struct ice_flow_prof_params *params;
+	struct ice_flow_prof_params *params __free(kfree) = NULL;
 	struct ice_prof_id *ids;
 	int status;
 	u64 prof_id;
@@ -1368,10 +1369,8 @@ ice_flow_add_prof_sync(struct ice_hw *hw, enum ice_block blk,
 
 	params->prof = devm_kzalloc(ice_hw_to_dev(hw), sizeof(*params->prof),
 				    GFP_KERNEL);
-	if (!params->prof) {
-		status = -ENOMEM;
-		goto free_params;
-	}
+	if (!params->prof)
+		return -ENOMEM;
 
 	/* initialize extraction sequence to all invalid (0xff) */
 	for (i = 0; i < ICE_MAX_FV_WORDS; i++) {
@@ -1414,8 +1413,6 @@ ice_flow_add_prof_sync(struct ice_hw *hw, enum ice_block blk,
 out:
 	if (status)
 		devm_kfree(ice_hw_to_dev(hw), params->prof);
-free_params:
-	kfree(params);
 
 	return status;
 }
@@ -2229,9 +2226,9 @@ static int
 ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 		     const struct ice_rss_hash_cfg *cfg)
 {
+	struct ice_flow_seg_info *segs __free(kfree) = NULL;
 	const enum ice_block blk = ICE_BLK_RSS;
 	struct ice_flow_prof *prof = NULL;
-	struct ice_flow_seg_info *segs;
 	u8 segs_cnt;
 	int status;
 
@@ -2245,7 +2242,7 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 	/* Construct the packet segment info from the hashed fields */
 	status = ice_flow_set_rss_seg_info(segs, segs_cnt, cfg);
 	if (status)
-		goto exit;
+		return status;
 
 	/* Search for a flow profile that has matching headers, hash fields,
 	 * symm and has the input VSI associated to it. If found, no further
@@ -2257,7 +2254,7 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 					ICE_FLOW_FIND_PROF_CHK_SYMM |
 					ICE_FLOW_FIND_PROF_CHK_VSI);
 	if (prof)
-		goto exit;
+		return status;
 
 	/* Check if a flow profile exists with the same protocol headers and
 	 * associated with the input VSI. If so disassociate the VSI from
@@ -2269,16 +2266,16 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 					ICE_FLOW_FIND_PROF_CHK_VSI);
 	if (prof) {
 		status = ice_flow_disassoc_prof(hw, blk, prof, vsi_handle);
-		if (!status)
-			ice_rem_rss_list(hw, vsi_handle, prof);
-		else
-			goto exit;
+		if (status)
+			return status;
+
+		ice_rem_rss_list(hw, vsi_handle, prof);
 
 		/* Remove profile if it has no VSIs associated */
 		if (bitmap_empty(prof->vsis, ICE_MAX_VSI)) {
 			status = ice_flow_rem_prof(hw, blk, prof->id);
 			if (status)
-				goto exit;
+				return status;
 		}
 	}
 
@@ -2293,14 +2290,14 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 		status = ice_flow_assoc_prof(hw, blk, prof, vsi_handle);
 		if (!status)
 			status = ice_add_rss_list(hw, vsi_handle, prof);
-		goto exit;
+		return status;
 	}
 
 	/* Create a new flow profile with packet segment information. */
 	status = ice_flow_add_prof(hw, blk, ICE_FLOW_RX,
 				   segs, segs_cnt, cfg->symm, &prof);
 	if (status)
-		goto exit;
+		return status;
 
 	prof->symm = cfg->symm;
 	ice_rss_set_symm(hw, prof);
@@ -2310,14 +2307,10 @@ ice_add_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 	 */
 	if (status) {
 		ice_flow_rem_prof(hw, blk, prof->id);
-		goto exit;
+		return status;
 	}
 
-	status = ice_add_rss_list(hw, vsi_handle, prof);
-
-exit:
-	kfree(segs);
-	return status;
+	return ice_add_rss_list(hw, vsi_handle, prof);
 }
 
 /**
@@ -2377,8 +2370,8 @@ static int
 ice_rem_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 		     const struct ice_rss_hash_cfg *cfg)
 {
+	struct ice_flow_seg_info *segs __free(kfree) = NULL;
 	const enum ice_block blk = ICE_BLK_RSS;
-	struct ice_flow_seg_info *segs;
 	struct ice_flow_prof *prof;
 	u8 segs_cnt;
 	int status;
@@ -2392,19 +2385,17 @@ ice_rem_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 	/* Construct the packet segment info from the hashed fields */
 	status = ice_flow_set_rss_seg_info(segs, segs_cnt, cfg);
 	if (status)
-		goto out;
+		return status;
 
 	prof = ice_flow_find_prof_conds(hw, blk, ICE_FLOW_RX, segs, segs_cnt,
 					cfg->symm, vsi_handle,
 					ICE_FLOW_FIND_PROF_CHK_FLDS);
-	if (!prof) {
-		status = -ENOENT;
-		goto out;
-	}
+	if (!prof)
+		return -ENOENT;
 
 	status = ice_flow_disassoc_prof(hw, blk, prof, vsi_handle);
 	if (status)
-		goto out;
+		return status;
 
 	/* Remove RSS configuration from VSI context before deleting
 	 * the flow profile.
@@ -2414,8 +2405,6 @@ ice_rem_rss_cfg_sync(struct ice_hw *hw, u16 vsi_handle,
 	if (bitmap_empty(prof->vsis, ICE_MAX_VSI))
 		status = ice_flow_rem_prof(hw, blk, prof->id);
 
-out:
-	kfree(segs);
 	return status;
 }
 

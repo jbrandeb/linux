@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2021-2022, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_lib.h"
 
@@ -171,8 +172,8 @@ requeue:
 static struct gnss_serial *ice_gnss_struct_init(struct ice_pf *pf)
 {
 	struct device *dev = ice_pf_to_dev(pf);
+	struct gnss_serial *gnss __free(kfree) = NULL;
 	struct kthread_worker *kworker;
-	struct gnss_serial *gnss;
 
 	gnss = kzalloc(sizeof(*gnss), GFP_KERNEL);
 	if (!gnss)
@@ -183,14 +184,12 @@ static struct gnss_serial *ice_gnss_struct_init(struct ice_pf *pf)
 
 	kthread_init_delayed_work(&gnss->read_work, ice_gnss_read);
 	kworker = kthread_create_worker(0, "ice-gnss-%s", dev_name(dev));
-	if (IS_ERR(kworker)) {
-		kfree(gnss);
+	if (IS_ERR(kworker))
 		return NULL;
-	}
 
 	gnss->kworker = kworker;
 
-	return gnss;
+	return_ptr(gnss);
 }
 
 /**

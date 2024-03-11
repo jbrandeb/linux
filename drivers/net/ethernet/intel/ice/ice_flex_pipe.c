@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_common.h"
 #include "ice_flex_pipe.h"
 #include "ice_flow.h"
@@ -3931,7 +3932,7 @@ ice_create_vsig_from_lst(struct ice_hw *hw, enum ice_block blk, u16 vsi,
 static bool
 ice_find_prof_vsig(struct ice_hw *hw, enum ice_block blk, u64 hdl, u16 *vsig)
 {
-	struct ice_vsig_prof *t;
+	struct ice_vsig_prof *t __free(kfree) = NULL;
 	struct list_head lst;
 	int status;
 
@@ -3947,7 +3948,6 @@ ice_find_prof_vsig(struct ice_hw *hw, enum ice_block blk, u64 hdl, u16 *vsig)
 	status = ice_find_dup_props_vsig(hw, blk, &lst, vsig);
 
 	list_del(&t->list);
-	kfree(t);
 
 	return !status;
 }

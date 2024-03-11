@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_base.h"
 #include "ice_flow.h"
@@ -294,8 +295,8 @@ static int ice_get_free_slot(void *array, int size, int curr)
  */
 static void ice_vsi_delete_from_hw(struct ice_vsi *vsi)
 {
+	struct ice_vsi_ctx *ctxt __free(kfree) = NULL;
 	struct ice_pf *pf = vsi->back;
-	struct ice_vsi_ctx *ctxt;
 	int status;
 
 	ice_fltr_remove_all(vsi);
@@ -313,8 +314,6 @@ static void ice_vsi_delete_from_hw(struct ice_vsi *vsi)
 	if (status)
 		dev_err(ice_pf_to_dev(pf), "Failed to delete VSI %i in FW - error: %d\n",
 			vsi->vsi_num, status);
-
-	kfree(ctxt);
 }
 
 /**
@@ -1246,9 +1245,9 @@ static bool ice_vsi_is_vlan_pruning_ena(struct ice_vsi *vsi)
  */
 static int ice_vsi_init(struct ice_vsi *vsi, u32 vsi_flags)
 {
+	struct ice_vsi_ctx *ctxt __free(kfree) = NULL;
 	struct ice_pf *pf = vsi->back;
 	struct ice_hw *hw = &pf->hw;
-	struct ice_vsi_ctx *ctxt;
 	struct device *dev;
 	int ret = 0;
 
@@ -1273,8 +1272,7 @@ static int ice_vsi_init(struct ice_vsi *vsi, u32 vsi_flags)
 		ctxt->vf_num = vsi->vf->vf_id + hw->func_caps.vf_base_id;
 		break;
 	default:
-		ret = -ENODEV;
-		goto out;
+		return -ENODEV;
 	}
 
 	/* Handle VLAN pruning for channel VSI if main VSI has VLAN
@@ -1317,7 +1315,7 @@ static int ice_vsi_init(struct ice_vsi *vsi, u32 vsi_flags)
 	} else {
 		ret = ice_vsi_setup_q_map(vsi, ctxt);
 		if (ret)
-			goto out;
+			return ret;
 
 		if (!(vsi_flags & ICE_VSI_FLAG_INIT))
 			/* means VSI being updated */
@@ -1339,15 +1337,13 @@ static int ice_vsi_init(struct ice_vsi *vsi, u32 vsi_flags)
 		ret = ice_add_vsi(hw, vsi->idx, ctxt, NULL);
 		if (ret) {
 			dev_err(dev, "Add VSI failed, err %d\n", ret);
-			ret = -EIO;
-			goto out;
+			return -EIO;
 		}
 	} else {
 		ret = ice_update_vsi(hw, vsi->idx, ctxt, NULL);
 		if (ret) {
 			dev_err(dev, "Update VSI failed, err %d\n", ret);
-			ret = -EIO;
-			goto out;
+			return -EIO;
 		}
 	}
 
@@ -1357,8 +1353,6 @@ static int ice_vsi_init(struct ice_vsi *vsi, u32 vsi_flags)
 	/* record VSI number returned */
 	vsi->vsi_num = ctxt->vsi_num;
 
-out:
-	kfree(ctxt);
 	return ret;
 }
 
@@ -1513,9 +1507,9 @@ void ice_vsi_cfg_crc_strip(struct ice_vsi *vsi, bool disable)
  */
 int ice_vsi_cfg_rss_lut_key(struct ice_vsi *vsi)
 {
+	u8 *lut __free(kfree), *key __free(kfree) = NULL;
 	struct ice_pf *pf = vsi->back;
 	struct device *dev;
-	u8 *lut, *key;
 	int err;
 
 	dev = ice_pf_to_dev(pf);
@@ -1551,14 +1545,12 @@ int ice_vsi_cfg_rss_lut_key(struct ice_vsi *vsi)
 	err = ice_set_rss_lut(vsi, lut, vsi->rss_table_size);
 	if (err) {
 		dev_err(dev, "set_rss_lut failed, error %d\n", err);
-		goto ice_vsi_cfg_rss_exit;
+		return err;
 	}
 
 	key = kzalloc(ICE_GET_SET_RSS_KEY_EXTEND_KEY_SIZE, GFP_KERNEL);
-	if (!key) {
-		err = -ENOMEM;
-		goto ice_vsi_cfg_rss_exit;
-	}
+	if (!key)
+		return -ENOMEM;
 
 	if (vsi->rss_hkey_user)
 		memcpy(key, vsi->rss_hkey_user, ICE_GET_SET_RSS_KEY_EXTEND_KEY_SIZE);
@@ -1569,9 +1561,6 @@ int ice_vsi_cfg_rss_lut_key(struct ice_vsi *vsi)
 	if (err)
 		dev_err(dev, "set_rss_key failed, error %d\n", err);
 
-	kfree(key);
-ice_vsi_cfg_rss_exit:
-	kfree(lut);
 	return err;
 }
 
@@ -3089,8 +3078,8 @@ ice_vsi_realloc_stat_arrays(struct ice_vsi *vsi)
  */
 int ice_vsi_rebuild(struct ice_vsi *vsi, u32 vsi_flags)
 {
+	struct ice_coalesce_stored *coalesce __free(kfree) = NULL;
 	struct ice_vsi_cfg_params params = {};
-	struct ice_coalesce_stored *coalesce;
 	int prev_num_q_vectors;
 	struct ice_pf *pf;
 	int ret;
@@ -3107,12 +3096,12 @@ int ice_vsi_rebuild(struct ice_vsi *vsi, u32 vsi_flags)
 
 	ret = ice_vsi_realloc_stat_arrays(vsi);
 	if (ret)
-		goto err_vsi_cfg;
+		return ret;
 
 	ice_vsi_decfg(vsi);
 	ret = ice_vsi_cfg_def(vsi, &params);
 	if (ret)
-		goto err_vsi_cfg;
+		return ret;
 
 	coalesce = kcalloc(vsi->num_q_vectors,
 			   sizeof(struct ice_coalesce_stored), GFP_KERNEL);
@@ -3128,19 +3117,15 @@ int ice_vsi_rebuild(struct ice_vsi *vsi, u32 vsi_flags)
 			goto err_vsi_cfg_tc_lan;
 		}
 
-		kfree(coalesce);
 		return ice_schedule_reset(pf, ICE_RESET_PFR);
 	}
 
 	ice_vsi_rebuild_set_coalesce(vsi, coalesce, prev_num_q_vectors);
-	kfree(coalesce);
 
 	return 0;
 
 err_vsi_cfg_tc_lan:
 	ice_vsi_decfg(vsi);
-	kfree(coalesce);
-err_vsi_cfg:
 	return ret;
 }
 
@@ -3364,9 +3349,9 @@ ice_vsi_setup_q_map_mqprio(struct ice_vsi *vsi, struct ice_vsi_ctx *ctxt,
 int ice_vsi_cfg_tc(struct ice_vsi *vsi, u8 ena_tc)
 {
 	u16 max_txqs[ICE_MAX_TRAFFIC_CLASS] = { 0 };
+	struct ice_vsi_ctx *ctx __free(kfree) = NULL;
 	struct ice_pf *pf = vsi->back;
 	struct ice_tc_cfg old_tc_cfg;
-	struct ice_vsi_ctx *ctx;
 	struct device *dev;
 	int i, ret = 0;
 	u8 num_tc = 0;
@@ -3409,7 +3394,7 @@ int ice_vsi_cfg_tc(struct ice_vsi *vsi, u8 ena_tc)
 
 	if (ret) {
 		memcpy(&vsi->tc_cfg, &old_tc_cfg, sizeof(vsi->tc_cfg));
-		goto out;
+		return ret;
 	}
 
 	/* must to indicate which section of VSI context are being modified */
@@ -3417,7 +3402,7 @@ int ice_vsi_cfg_tc(struct ice_vsi *vsi, u8 ena_tc)
 	ret = ice_update_vsi(&pf->hw, vsi->idx, ctx, NULL);
 	if (ret) {
 		dev_info(dev, "Failed VSI Update\n");
-		goto out;
+		return ret;
 	}
 
 	if (vsi->type == ICE_VSI_PF &&
@@ -3430,14 +3415,13 @@ int ice_vsi_cfg_tc(struct ice_vsi *vsi, u8 ena_tc)
 	if (ret) {
 		dev_err(dev, "VSI %d failed TC config, error %d\n",
 			vsi->vsi_num, ret);
-		goto out;
+		return ret;
 	}
 	ice_vsi_update_q_map(vsi, ctx);
 	vsi->info.valid_sections = 0;
 
 	ice_vsi_cfg_netdev_tc(vsi, ena_tc);
-out:
-	kfree(ctx);
+
 	return ret;
 }
 

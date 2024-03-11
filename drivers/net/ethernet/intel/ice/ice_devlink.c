@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2020, Intel Corporation. */
 
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 #include "ice.h"
@@ -562,8 +563,8 @@ static const char *ice_devlink_port_opt_speed_str(u8 speed)
  */
 static void ice_devlink_port_options_print(struct ice_pf *pf)
 {
+	struct ice_aqc_get_port_options_elem *opt, *options __free(kfree) = NULL;
 	u8 i, j, options_count, cnt, speed, pending_idx, active_idx;
-	struct ice_aqc_get_port_options_elem *options, *opt;
 	struct device *dev = ice_pf_to_dev(pf);
 	bool active_valid, pending_valid;
 	char desc[ICE_PORT_OPT_DESC_LEN];
@@ -587,7 +588,7 @@ static void ice_devlink_port_options_print(struct ice_pf *pf)
 		if (status) {
 			dev_dbg(dev, "Couldn't read port option for port %d, err %d\n",
 				i, status);
-			goto err;
+			return;
 		}
 	}
 
@@ -620,9 +621,6 @@ static void ice_devlink_port_options_print(struct ice_pf *pf)
 
 		dev_dbg(dev, "%s\n", desc);
 	}
-
-err:
-	kfree(options);
 }
 
 /**

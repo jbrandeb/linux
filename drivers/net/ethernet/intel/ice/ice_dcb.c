@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2019, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_common.h"
 #include "ice_sched.h"
 #include "ice_dcb.h"
@@ -638,7 +639,7 @@ int
 ice_aq_get_dcb_cfg(struct ice_hw *hw, u8 mib_type, u8 bridgetype,
 		   struct ice_dcbx_cfg *dcbcfg)
 {
-	u8 *lldpmib;
+	u8 *lldpmib __free(kfree) = NULL;
 	int ret;
 
 	/* Allocate the LLDPDU */
@@ -652,8 +653,6 @@ ice_aq_get_dcb_cfg(struct ice_hw *hw, u8 mib_type, u8 bridgetype,
 	if (!ret)
 		/* Parse LLDP MIB to get DCB configuration */
 		ret = ice_lldp_to_dcb_cfg(lldpmib, dcbcfg);
-
-	kfree(lldpmib);
 
 	return ret;
 }
@@ -1491,7 +1490,7 @@ ice_dcb_cfg_to_lldp(u8 *lldpmib, u16 *miblen, struct ice_dcbx_cfg *dcbcfg)
  */
 int ice_set_dcb_cfg(struct ice_port_info *pi)
 {
-	u8 mib_type, *lldpmib = NULL;
+	u8 mib_type, *lldpmib __free(kfree) = NULL;
 	struct ice_dcbx_cfg *dcbcfg;
 	struct ice_hw *hw;
 	u16 miblen;
@@ -1516,8 +1515,6 @@ int ice_set_dcb_cfg(struct ice_port_info *pi)
 	ice_dcb_cfg_to_lldp(lldpmib, &miblen, dcbcfg);
 	ret = ice_aq_set_lldp_mib(hw, mib_type, (void *)lldpmib, miblen,
 				  NULL);
-
-	kfree(lldpmib);
 
 	return ret;
 }

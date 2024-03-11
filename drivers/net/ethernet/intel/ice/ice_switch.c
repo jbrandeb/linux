@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2018, Intel Corporation. */
 
+#include <linux/slab.h>
 #include "ice_lib.h"
 #include "ice_switch.h"
 
@@ -1980,7 +1981,7 @@ int
 ice_update_recipe_lkup_idx(struct ice_hw *hw,
 			   struct ice_update_recipe_lkup_idx_params *params)
 {
-	struct ice_aqc_recipe_data_elem *rcp_list;
+	struct ice_aqc_recipe_data_elem *rcp_list __free(kfree) = NULL;
 	u16 num_recps = ICE_MAX_NUM_RECIPES;
 	int status;
 
@@ -1994,7 +1995,7 @@ ice_update_recipe_lkup_idx(struct ice_hw *hw,
 	if (status) {
 		ice_debug(hw, ICE_DBG_SW, "Failed to get recipe %d, status %d\n",
 			  params->rid, status);
-		goto error_out;
+		return status;
 	}
 
 	/* only modify existing recipe's lkup_idx and mask if valid, while
@@ -2016,8 +2017,6 @@ ice_update_recipe_lkup_idx(struct ice_hw *hw,
 			  params->mask, params->mask_valid ? "true" : "false",
 			  status);
 
-error_out:
-	kfree(rcp_list);
 	return status;
 }
 
@@ -2155,8 +2154,8 @@ static int
 ice_get_recp_frm_fw(struct ice_hw *hw, struct ice_sw_recipe *recps, u8 rid,
 		    bool *refresh_required)
 {
+	struct ice_aqc_recipe_data_elem *tmp __free(kfree) = NULL;
 	DECLARE_BITMAP(result_bm, ICE_MAX_FV_WORDS);
-	struct ice_aqc_recipe_data_elem *tmp;
 	u16 num_recps = ICE_MAX_NUM_RECIPES;
 	struct ice_prot_lkup_ext *lkup_exts;
 	u8 fv_word_idx = 0;
@@ -2174,7 +2173,7 @@ ice_get_recp_frm_fw(struct ice_hw *hw, struct ice_sw_recipe *recps, u8 rid,
 	status = ice_aq_get_recipe(hw, tmp, &num_recps, rid, NULL);
 	/* non-zero status meaning recipe doesn't exist */
 	if (status)
-		goto err_unroll;
+		return status;
 
 	/* Get recipe to profile map so that we can get the fv from lkups that
 	 * we read for a recipe from FW. Since we want to minimize the number of
@@ -2204,10 +2203,8 @@ ice_get_recp_frm_fw(struct ice_hw *hw, struct ice_sw_recipe *recps, u8 rid,
 
 		rg_entry = devm_kzalloc(ice_hw_to_dev(hw), sizeof(*rg_entry),
 					GFP_KERNEL);
-		if (!rg_entry) {
-			status = -ENOMEM;
-			goto err_unroll;
-		}
+		if (!rg_entry)
+			return -ENOMEM;
 
 		idx = root_bufs.recipe_indx;
 		is_root = root_bufs.content.rid & ICE_AQ_RECIPE_ID_IS_ROOT;
@@ -2288,17 +2285,13 @@ ice_get_recp_frm_fw(struct ice_hw *hw, struct ice_sw_recipe *recps, u8 rid,
 	recps[rid].root_buf = devm_kmemdup(ice_hw_to_dev(hw), tmp,
 					   recps[rid].n_grp_count * sizeof(*recps[rid].root_buf),
 					   GFP_KERNEL);
-	if (!recps[rid].root_buf) {
-		status = -ENOMEM;
-		goto err_unroll;
-	}
+	if (!recps[rid].root_buf)
+		return -ENOMEM;
 
 	/* Copy result indexes */
 	bitmap_copy(recps[rid].res_idxs, result_bm, ICE_MAX_FV_WORDS);
 	recps[rid].recp_created = true;
 
-err_unroll:
-	kfree(tmp);
 	return status;
 }
 
@@ -4913,9 +4906,9 @@ static int
 ice_add_sw_recipe(struct ice_hw *hw, struct ice_sw_recipe *rm,
 		  unsigned long *profiles)
 {
+	struct ice_aqc_recipe_data_elem *tmp __free(kfree) = NULL;
 	DECLARE_BITMAP(result_idx_bm, ICE_MAX_FV_WORDS);
 	struct ice_aqc_recipe_content *content;
-	struct ice_aqc_recipe_data_elem *tmp;
 	struct ice_aqc_recipe_data_elem *buf;
 	struct ice_recp_grp_entry *entry;
 	u16 free_res_idx;
@@ -5193,12 +5186,10 @@ ice_add_sw_recipe(struct ice_hw *hw, struct ice_sw_recipe *rm,
 		recp->recp_created = true;
 	}
 	rm->root_buf = buf;
-	kfree(tmp);
 	return status;
 
 err_unroll:
 err_mem:
-	kfree(tmp);
 	devm_kfree(ice_hw_to_dev(hw), buf);
 	return status;
 }
@@ -5292,12 +5283,12 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 {
 	DECLARE_BITMAP(fv_bitmap, ICE_MAX_NUM_PROFILES);
 	DECLARE_BITMAP(profiles, ICE_MAX_NUM_PROFILES);
-	struct ice_prot_lkup_ext *lkup_exts;
+	struct ice_prot_lkup_ext *lkup_exts __free(kfree) = NULL;
+	struct ice_sw_recipe *rm __free(kfree) = NULL;
 	struct ice_recp_grp_entry *r_entry;
 	struct ice_sw_fv_list_entry *fvit;
 	struct ice_recp_grp_entry *r_tmp;
 	struct ice_sw_fv_list_entry *tmp;
-	struct ice_sw_recipe *rm;
 	int status = 0;
 	u8 i;
 
@@ -5314,23 +5305,17 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	for (i = 0; i < lkups_cnt; i++) {
 		u16 count;
 
-		if (lkups[i].type >= ICE_PROTOCOL_LAST) {
-			status = -EIO;
-			goto err_free_lkup_exts;
-		}
+		if (lkups[i].type >= ICE_PROTOCOL_LAST)
+			return -EIO;
 
 		count = ice_fill_valid_words(&lkups[i], lkup_exts);
-		if (!count) {
-			status = -EIO;
-			goto err_free_lkup_exts;
-		}
+		if (!count)
+			return -EIO;
 	}
 
 	rm = kzalloc(sizeof(*rm), GFP_KERNEL);
-	if (!rm) {
-		status = -ENOMEM;
-		goto err_free_lkup_exts;
-	}
+	if (!rm)
+		return -ENOMEM;
 
 	/* Get field vectors that contain fields extracted from all the protocol
 	 * headers being programmed.
@@ -5439,10 +5424,6 @@ err_unroll:
 	}
 
 	devm_kfree(ice_hw_to_dev(hw), rm->root_buf);
-	kfree(rm);
-
-err_free_lkup_exts:
-	kfree(lkup_exts);
 
 	return status;
 }

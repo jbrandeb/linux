@@ -5,6 +5,7 @@
 #include <linux/uuid.h>
 #include <linux/crc32.h>
 #include <linux/pldmfw.h>
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_fw_update.h"
 
@@ -50,9 +51,9 @@ ice_send_package_data(struct pldmfw *context, const u8 *data, u16 length)
 	struct ice_fwu_priv *priv = container_of(context, struct ice_fwu_priv, context);
 	struct netlink_ext_ack *extack = priv->extack;
 	struct device *dev = context->dev;
+	u8 *package_data __free(kfree) = NULL;
 	struct ice_pf *pf = priv->pf;
 	struct ice_hw *hw = &pf->hw;
-	u8 *package_data;
 	int status;
 
 	dev_dbg(dev, "Sending PLDM record package data to firmware\n");
@@ -62,9 +63,6 @@ ice_send_package_data(struct pldmfw *context, const u8 *data, u16 length)
 		return -ENOMEM;
 
 	status = ice_nvm_set_pkg_data(hw, false, package_data, length, NULL);
-
-	kfree(package_data);
-
 	if (status) {
 		dev_err(dev, "Failed to send record package data to firmware, err %d aq_err %s\n",
 			status, ice_aq_str(hw->adminq.sq_last_status));
@@ -208,8 +206,8 @@ ice_send_component_table(struct pldmfw *context, struct pldmfw_component *compon
 			 u8 transfer_flag)
 {
 	struct ice_fwu_priv *priv = container_of(context, struct ice_fwu_priv, context);
+	struct ice_aqc_nvm_comp_tbl *comp_tbl __free(kfree) = NULL;
 	struct netlink_ext_ack *extack = priv->extack;
-	struct ice_aqc_nvm_comp_tbl *comp_tbl;
 	u8 comp_response, comp_response_code;
 	struct device *dev = context->dev;
 	struct ice_pf *pf = priv->pf;
@@ -247,8 +245,6 @@ ice_send_component_table(struct pldmfw *context, struct pldmfw_component *compon
 	status = ice_nvm_pass_component_tbl(hw, (u8 *)comp_tbl, length,
 					    transfer_flag, &comp_response,
 					    &comp_response_code, NULL);
-
-	kfree(comp_tbl);
 
 	if (status) {
 		dev_err(dev, "Failed to transfer component table to firmware, err %d aq_err %s\n",
@@ -403,9 +399,9 @@ ice_write_nvm_module(struct ice_pf *pf, u16 module, const char *component,
 {
 	struct device *dev = ice_pf_to_dev(pf);
 	struct devlink *devlink;
+	u8 *block __free(kfree) = NULL;
 	u32 offset = 0;
 	bool last_cmd;
-	u8 *block;
 	int err;
 
 	dev_dbg(dev, "Beginning write of flash component '%s', module 0x%02x\n", component, module);
@@ -452,7 +448,6 @@ ice_write_nvm_module(struct ice_pf *pf, u16 module, const char *component,
 		devlink_flash_update_status_notify(devlink, "Flashing done",
 						   component, length, length);
 
-	kfree(block);
 	return err;
 }
 
@@ -849,8 +844,8 @@ static const struct pldmfw_ops ice_fwu_ops_e822 = {
 int ice_get_pending_updates(struct ice_pf *pf, u8 *pending,
 			    struct netlink_ext_ack *extack)
 {
+	struct ice_hw_dev_caps *dev_caps __free(kfree) = NULL;
 	struct device *dev = ice_pf_to_dev(pf);
-	struct ice_hw_dev_caps *dev_caps;
 	struct ice_hw *hw = &pf->hw;
 	int err;
 
@@ -866,7 +861,6 @@ int ice_get_pending_updates(struct ice_pf *pf, u8 *pending,
 	err = ice_discover_dev_caps(hw, dev_caps);
 	if (err) {
 		NL_SET_ERR_MSG_MOD(extack, "Unable to read device capabilities");
-		kfree(dev_caps);
 		return err;
 	}
 
@@ -886,8 +880,6 @@ int ice_get_pending_updates(struct ice_pf *pf, u8 *pending,
 		dev_info(dev, "The fw.netlist flash component has a pending update\n");
 		*pending |= ICE_AQC_NVM_ACTIV_SEL_NETLIST;
 	}
-
-	kfree(dev_caps);
 
 	return 0;
 }

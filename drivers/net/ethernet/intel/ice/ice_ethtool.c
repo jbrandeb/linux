@@ -3,6 +3,7 @@
 
 /* ethtool support for ice */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_ethtool.h"
 #include "ice_flow.h"
@@ -526,9 +527,9 @@ ice_get_eeprom(struct net_device *netdev, struct ethtool_eeprom *eeprom,
 	struct ice_vsi *vsi = np->vsi;
 	struct ice_pf *pf = vsi->back;
 	struct ice_hw *hw = &pf->hw;
+	u8 *buf __free(kfree) = NULL;
 	struct device *dev;
 	int ret;
-	u8 *buf;
 
 	dev = ice_pf_to_dev(pf);
 
@@ -544,7 +545,7 @@ ice_get_eeprom(struct net_device *netdev, struct ethtool_eeprom *eeprom,
 	if (ret) {
 		dev_err(dev, "ice_acquire_nvm failed, err %d aq_err %s\n",
 			ret, ice_aq_str(hw->adminq.sq_last_status));
-		goto out;
+		return ret;
 	}
 
 	ret = ice_read_flat_nvm(hw, eeprom->offset, &eeprom->len, buf,
@@ -556,10 +557,9 @@ ice_get_eeprom(struct net_device *netdev, struct ethtool_eeprom *eeprom,
 	}
 
 	memcpy(bytes, buf, eeprom->len);
+
 release:
 	ice_release_nvm(hw);
-out:
-	kfree(buf);
 	return ret;
 }
 
@@ -1297,8 +1297,8 @@ ice_set_fecparam(struct net_device *netdev, struct ethtool_fecparam *fecparam)
 static int
 ice_get_fecparam(struct net_device *netdev, struct ethtool_fecparam *fecparam)
 {
+	struct ice_aqc_get_phy_caps_data *caps __free(kfree) = NULL;
 	struct ice_netdev_priv *np = netdev_priv(netdev);
-	struct ice_aqc_get_phy_caps_data *caps;
 	struct ice_link_status *link_info;
 	struct ice_vsi *vsi = np->vsi;
 	struct ice_port_info *pi;
@@ -1331,7 +1331,7 @@ ice_get_fecparam(struct net_device *netdev, struct ethtool_fecparam *fecparam)
 	err = ice_aq_get_phy_caps(pi, false, ICE_AQC_REPORT_TOPO_CAP_MEDIA,
 				  caps, NULL);
 	if (err)
-		goto done;
+		return err;
 
 	/* Set supported/configured FEC modes based on PHY capability */
 	if (caps->caps & ICE_AQC_PHY_EN_AUTO_FEC)
@@ -1348,8 +1348,6 @@ ice_get_fecparam(struct net_device *netdev, struct ethtool_fecparam *fecparam)
 	if (caps->link_fec_options == 0)
 		fecparam->fec |= ETHTOOL_FEC_OFF;
 
-done:
-	kfree(caps);
 	return err;
 }
 
@@ -1981,8 +1979,8 @@ static int
 ice_get_link_ksettings(struct net_device *netdev,
 		       struct ethtool_link_ksettings *ks)
 {
+	struct ice_aqc_get_phy_caps_data *caps __free(kfree) = NULL;
 	struct ice_netdev_priv *np = netdev_priv(netdev);
-	struct ice_aqc_get_phy_caps_data *caps;
 	struct ice_link_status *hw_link_info;
 	struct ice_vsi *vsi = np->vsi;
 	int err;
@@ -2039,7 +2037,7 @@ ice_get_link_ksettings(struct net_device *netdev,
 	err = ice_aq_get_phy_caps(vsi->port_info, false,
 				  ICE_AQC_REPORT_ACTIVE_CFG, caps, NULL);
 	if (err)
-		goto done;
+		return err;
 
 	/* Set the advertised flow control based on the PHY capability */
 	if ((caps->caps & ICE_AQC_PHY_EN_TX_LINK_PAUSE) &&
@@ -2074,7 +2072,7 @@ ice_get_link_ksettings(struct net_device *netdev,
 	err = ice_aq_get_phy_caps(vsi->port_info, false,
 				  ICE_AQC_REPORT_TOPO_CAP_MEDIA, caps, NULL);
 	if (err)
-		goto done;
+		return err;
 
 	/* Set supported FEC modes based on PHY capability */
 	ethtool_link_ksettings_add_link_mode(ks, supported, FEC_NONE);
@@ -2091,8 +2089,6 @@ ice_get_link_ksettings(struct net_device *netdev,
 		ethtool_link_ksettings_add_link_mode(ks, advertising, Autoneg);
 	}
 
-done:
-	kfree(caps);
 	return err;
 }
 
@@ -2270,11 +2266,11 @@ static int
 ice_set_link_ksettings(struct net_device *netdev,
 		       const struct ethtool_link_ksettings *ks)
 {
+	struct ice_aqc_get_phy_caps_data *phy_caps __free(kfree) = NULL;
 	struct ice_netdev_priv *np = netdev_priv(netdev);
 	u8 autoneg, timeout = TEST_SET_BITS_TIMEOUT;
 	struct ethtool_link_ksettings copy_ks = *ks;
 	struct ethtool_link_ksettings safe_ks = {};
-	struct ice_aqc_get_phy_caps_data *phy_caps;
 	struct ice_aqc_set_phy_cfg_data config;
 	u16 adv_link_speed, curr_link_speed;
 	struct ice_pf *pf = np->vsi->back;
@@ -2456,7 +2452,6 @@ ice_set_link_ksettings(struct net_device *netdev,
 	/* Save speed request */
 	pi->phy.curr_user_speed_req = adv_link_speed;
 done:
-	kfree(phy_caps);
 	clear_bit(ICE_CFG_BUSY, pf->state);
 
 	return err;
@@ -3104,9 +3099,9 @@ done:
 static void
 ice_get_pauseparam(struct net_device *netdev, struct ethtool_pauseparam *pause)
 {
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
 	struct ice_netdev_priv *np = netdev_priv(netdev);
 	struct ice_port_info *pi = np->vsi->port_info;
-	struct ice_aqc_get_phy_caps_data *pcaps;
 	struct ice_dcbx_cfg *dcbx_cfg;
 	int status;
 
@@ -3124,22 +3119,19 @@ ice_get_pauseparam(struct net_device *netdev, struct ethtool_pauseparam *pause)
 	status = ice_aq_get_phy_caps(pi, false, ICE_AQC_REPORT_ACTIVE_CFG, pcaps,
 				     NULL);
 	if (status)
-		goto out;
+		return;
 
 	pause->autoneg = ice_is_phy_caps_an_enabled(pcaps) ? AUTONEG_ENABLE :
 							     AUTONEG_DISABLE;
 
 	if (dcbx_cfg->pfc.pfcena)
 		/* PFC enabled so report LFC as off */
-		goto out;
+		return;
 
 	if (pcaps->caps & ICE_AQC_PHY_EN_TX_LINK_PAUSE)
 		pause->tx_pause = 1;
 	if (pcaps->caps & ICE_AQC_PHY_EN_RX_LINK_PAUSE)
 		pause->rx_pause = 1;
-
-out:
-	kfree(pcaps);
 }
 
 /**
@@ -3150,8 +3142,8 @@ out:
 static int
 ice_set_pauseparam(struct net_device *netdev, struct ethtool_pauseparam *pause)
 {
+	struct ice_aqc_get_phy_caps_data *pcaps __free(kfree) = NULL;
 	struct ice_netdev_priv *np = netdev_priv(netdev);
-	struct ice_aqc_get_phy_caps_data *pcaps;
 	struct ice_link_status *hw_link_info;
 	struct ice_pf *pf = np->vsi->back;
 	struct ice_dcbx_cfg *dcbx_cfg;
@@ -3189,15 +3181,11 @@ ice_set_pauseparam(struct net_device *netdev, struct ethtool_pauseparam *pause)
 	/* Get current PHY config */
 	err = ice_aq_get_phy_caps(pi, false, ICE_AQC_REPORT_ACTIVE_CFG, pcaps,
 				  NULL);
-	if (err) {
-		kfree(pcaps);
+	if (err)
 		return err;
-	}
 
 	is_an = ice_is_phy_caps_an_enabled(pcaps) ? AUTONEG_ENABLE :
 						    AUTONEG_DISABLE;
-
-	kfree(pcaps);
 
 	if (pause->autoneg != is_an) {
 		netdev_info(netdev, "To change autoneg please use: ethtool -s <dev> autoneg <on|off>\n");
@@ -3284,9 +3272,9 @@ ice_get_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
 	u32 rss_context = rxfh->rss_context;
 	struct ice_vsi *vsi = np->vsi;
 	struct ice_pf *pf = vsi->back;
+	u8 *lut __free(kfree) = NULL;
 	u16 qcount, offset;
 	int err, num_tc, i;
-	u8 *lut;
 
 	if (!test_bit(ICE_FLAG_RSS_ENA, pf->flags)) {
 		netdev_warn(netdev, "RSS is not supported on this VSI!\n");
@@ -3325,23 +3313,21 @@ ice_get_rxfh(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
 
 	err = ice_get_rss_key(vsi, rxfh->key);
 	if (err)
-		goto out;
+		return err;
 
 	err = ice_get_rss_lut(vsi, lut, vsi->rss_table_size);
 	if (err)
-		goto out;
+		return err;
 
 	if (ice_is_adq_active(pf)) {
 		for (i = 0; i < vsi->rss_table_size; i++)
 			rxfh->indir[i] = offset + lut[i] % qcount;
-		goto out;
+		return err;
 	}
 
 	for (i = 0; i < vsi->rss_table_size; i++)
 		rxfh->indir[i] = lut[i];
 
-out:
-	kfree(lut);
 	return err;
 }
 
@@ -3549,10 +3535,10 @@ static int ice_get_valid_rss_size(struct ice_hw *hw, int new_size)
 static int ice_vsi_set_dflt_rss_lut(struct ice_vsi *vsi, int req_rss_size)
 {
 	struct ice_pf *pf = vsi->back;
+	u8 *lut __free(kfree) = NULL;
 	struct device *dev;
 	struct ice_hw *hw;
 	int err;
-	u8 *lut;
 
 	dev = ice_pf_to_dev(pf);
 	hw = &pf->hw;
@@ -3577,7 +3563,6 @@ static int ice_vsi_set_dflt_rss_lut(struct ice_vsi *vsi, int req_rss_size)
 		dev_err(dev, "Cannot set RSS lut, err %d aq_err %s\n", err,
 			ice_aq_str(hw->adminq.sq_last_status));
 
-	kfree(lut);
 	return err;
 }
 

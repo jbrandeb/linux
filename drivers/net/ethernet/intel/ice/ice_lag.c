@@ -3,6 +3,7 @@
 
 /* Link Aggregation code */
 
+#include <linux/slab.h>
 #include "ice.h"
 #include "ice_lib.h"
 #include "ice_lag.h"
@@ -208,7 +209,7 @@ static int
 ice_lag_cfg_fltr(struct ice_lag *lag, u32 act, u16 recipe_id, u16 *rule_idx,
 		 bool add)
 {
-	struct ice_sw_rule_lkup_rx_tx *s_rule;
+	struct ice_sw_rule_lkup_rx_tx *s_rule __free(kfree) = NULL;
 	u16 s_rule_sz, vsi_num;
 	struct ice_hw *hw;
 	u8 *eth_hdr;
@@ -244,15 +245,13 @@ ice_lag_cfg_fltr(struct ice_lag *lag, u32 act, u16 recipe_id, u16 *rule_idx,
 
 	err = ice_aq_sw_rules(&lag->pf->hw, s_rule, s_rule_sz, 1, opc, NULL);
 	if (err)
-		goto dflt_fltr_free;
+		return err;
 
 	if (add)
 		*rule_idx = le16_to_cpu(s_rule->index);
 	else
 		*rule_idx = 0;
 
-dflt_fltr_free:
-	kfree(s_rule);
 	return err;
 }
 
@@ -753,7 +752,7 @@ void ice_lag_move_vf_nodes_cfg(struct ice_lag *lag, u8 src_prt, u8 dst_prt)
 static void
 ice_lag_cfg_cp_fltr(struct ice_lag *lag, bool add)
 {
-	struct ice_sw_rule_lkup_rx_tx *s_rule = NULL;
+	struct ice_sw_rule_lkup_rx_tx *s_rule __free(kfree) = NULL;
 	struct ice_vsi *vsi;
 	u16 buf_len, opc;
 
@@ -785,16 +784,13 @@ ice_lag_cfg_cp_fltr(struct ice_lag *lag, bool add)
 	if (ice_aq_sw_rules(&lag->pf->hw, s_rule, buf_len, 1, opc, NULL)) {
 		netdev_warn(lag->netdev, "Error %s CP rule for fail-over\n",
 			    add ? "ADDING" : "REMOVING");
-		goto cp_free;
+		return;
 	}
 
 	if (add)
 		lag->cp_rule_idx = le16_to_cpu(s_rule->index);
 	else
 		lag->cp_rule_idx = 0;
-
-cp_free:
-	kfree(s_rule);
 }
 
 /**
@@ -850,10 +846,10 @@ ice_lag_reclaim_vf_tc(struct ice_lag *lag, struct ice_hw *src_hw, u16 vsi_num,
 		      u8 tc)
 {
 	DEFINE_FLEX(struct ice_aqc_move_elem, buf, teid, 1);
+	struct ice_aqc_cfg_txqs_buf *qbuf __free(kfree) = NULL;
 	struct device *dev = ice_pf_to_dev(lag->pf);
 	u16 numq, valq, num_moved, qbuf_size;
 	u16 buf_size = __struct_size(buf);
-	struct ice_aqc_cfg_txqs_buf *qbuf;
 	struct ice_sched_node *n_prt;
 	__le32 teid, parent_teid;
 	struct ice_vsi_ctx *ctx;
@@ -903,12 +899,10 @@ ice_lag_reclaim_vf_tc(struct ice_lag *lag, struct ice_hw *src_hw, u16 vsi_num,
 			       src_hw->port_info->lport, hw->port_info->lport,
 			       NULL)) {
 		dev_warn(dev, "Failure to configure queues for LAG failover\n");
-		goto reclaim_qerr;
+		goto resume_reclaim;
 	}
 
 reclaim_none:
-	kfree(qbuf);
-
 	/* find parent in primary tree */
 	n_prt = ice_lag_get_sched_parent(hw, tc);
 	if (!n_prt)
@@ -927,9 +921,6 @@ reclaim_none:
 		ice_sched_update_parent(n_prt, ctx->sched.vsi_node[tc]);
 
 	goto resume_reclaim;
-
-reclaim_qerr:
-	kfree(qbuf);
 
 resume_reclaim:
 	/* restart traffic */
@@ -1051,7 +1042,7 @@ static void
 ice_lag_set_swid(u16 primary_swid, struct ice_lag *local_lag,
 		 bool link)
 {
-	struct ice_aqc_alloc_free_res_elem *buf;
+	struct ice_aqc_alloc_free_res_elem *buf __free(kfree) = NULL;
 	struct ice_aqc_set_port_params *cmd;
 	struct ice_aq_desc desc;
 	u16 buf_len, swid;
@@ -1092,8 +1083,6 @@ ice_lag_set_swid(u16 primary_swid, struct ice_lag *local_lag,
 	if (status)
 		dev_err(ice_pf_to_dev(local_lag->pf), "Error subscribing to SWID 0x%04X\n",
 			local_lag->bond_swid);
-
-	kfree(buf);
 
 	/* Configure port param SWID to correct value */
 	if (link)
@@ -1151,7 +1140,7 @@ static void ice_lag_primary_swid(struct ice_lag *lag, bool link)
 static void ice_lag_add_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
 {
 	u16 num_vsi, rule_buf_sz, vsi_list_id, event_vsi_num, prim_vsi_idx;
-	struct ice_sw_rule_vsi_list *s_rule = NULL;
+	struct ice_sw_rule_vsi_list *s_rule __free(kfree) = NULL;
 	struct device *dev;
 
 	num_vsi = 1;
@@ -1181,7 +1170,6 @@ static void ice_lag_add_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
 	if (ice_aq_sw_rules(&event_pf->hw, s_rule, rule_buf_sz, 1,
 			    ice_aqc_opc_update_sw_rules, NULL))
 		dev_warn(dev, "Error adding VSI prune list\n");
-	kfree(s_rule);
 }
 
 /**
@@ -1191,8 +1179,8 @@ static void ice_lag_add_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
  */
 static void ice_lag_del_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
 {
+	struct ice_sw_rule_vsi_list *s_rule __free(kfree) = NULL;
 	u16 num_vsi, vsi_num, vsi_idx, rule_buf_sz, vsi_list_id;
-	struct ice_sw_rule_vsi_list *s_rule = NULL;
 	struct device *dev;
 
 	num_vsi = 1;
@@ -1222,8 +1210,6 @@ static void ice_lag_del_prune_list(struct ice_lag *lag, struct ice_pf *event_pf)
 	if (ice_aq_sw_rules(&event_pf->hw, (struct ice_aqc_sw_rules *)s_rule,
 			    rule_buf_sz, 1, ice_aqc_opc_update_sw_rules, NULL))
 		dev_warn(dev, "Error clearing VSI prune list\n");
-
-	kfree(s_rule);
 }
 
 /**
@@ -1835,7 +1821,7 @@ static void ice_unregister_lag_handler(struct ice_lag *lag)
 static int ice_create_lag_recipe(struct ice_hw *hw, u16 *rid,
 				 const u8 *base_recipe, u8 prio)
 {
-	struct ice_aqc_recipe_data_elem *new_rcp;
+	struct ice_aqc_recipe_data_elem *new_rcp __free(kfree) = NULL;
 	int err;
 
 	err = ice_alloc_recipe(hw, rid);
@@ -1858,7 +1844,6 @@ static int ice_create_lag_recipe(struct ice_hw *hw, u16 *rid,
 	if (err)
 		*rid = 0;
 
-	kfree(new_rcp);
 	return err;
 }
 
